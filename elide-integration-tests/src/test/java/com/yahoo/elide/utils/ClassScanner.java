@@ -5,7 +5,6 @@
  */
 package com.yahoo.elide.utils;
 
-import lombok.extern.slf4j.Slf4j;
 import org.glassfish.jersey.server.internal.scanning.AnnotationAcceptingListener;
 import org.glassfish.jersey.server.internal.scanning.PackageNamesScanner;
 
@@ -19,7 +18,6 @@ import java.util.stream.Collectors;
 /**
  * Scans a package for classes by looking at files in the classpath.
  */
-@Slf4j
 public class ClassScanner {
     /**
      * Scans all classes accessible from the context class loader which belong to the given package and subpackages.

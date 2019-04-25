@@ -5,11 +5,13 @@
  */
 package com.yahoo.elide.datastores.hibernate3;
 
-import com.google.common.base.Preconditions;
 import com.yahoo.elide.core.DataStore;
 import com.yahoo.elide.core.DataStoreTransaction;
 import com.yahoo.elide.core.EntityDictionary;
 import com.yahoo.elide.core.exceptions.TransactionException;
+
+import com.google.common.base.Preconditions;
+
 import org.hibernate.EntityMode;
 import org.hibernate.HibernateException;
 import org.hibernate.ScrollMode;
@@ -24,19 +26,7 @@ public class HibernateStore implements DataStore {
     private final SessionFactory sessionFactory;
     private final boolean isScrollEnabled;
     private final ScrollMode scrollMode;
-
-    /**
-     * Initialize HibernateStore and dictionaries.
-     *
-     * @param aSessionFactory the a session factory
-     * @deprecated since 2.3.2. Use builder instead.
-     */
-    @Deprecated
-    public HibernateStore(SessionFactory aSessionFactory) {
-        this.sessionFactory = aSessionFactory;
-        this.isScrollEnabled = true;
-        this.scrollMode = ScrollMode.FORWARD_ONLY;
-    }
+    private final HibernateTransactionSupplier transactionSupplier;
 
     /**
      * Constructor.
@@ -45,10 +35,29 @@ public class HibernateStore implements DataStore {
      * @param isScrollEnabled Whether or not scrolling is enabled on driver
      * @param scrollMode Scroll mode to use for scrolling driver
      */
-    private HibernateStore(SessionFactory aSessionFactory, boolean isScrollEnabled, ScrollMode scrollMode) {
+    protected HibernateStore(SessionFactory aSessionFactory, boolean isScrollEnabled, ScrollMode scrollMode) {
+        this(aSessionFactory, isScrollEnabled, scrollMode, HibernateTransaction::new);
+    }
+
+    /**
+     * Constructor.
+     *
+     * Useful for extending the store and relying on existing code
+     * to instantiate custom hibernate transaction.
+     *
+     * @param aSessionFactory Session factory
+     * @param isScrollEnabled Whether or not scrolling is enabled on driver
+     * @param scrollMode Scroll mode to use for scrolling driver
+     * @param transactionSupplier Supplier for transaction
+     */
+    protected HibernateStore(SessionFactory aSessionFactory,
+                             boolean isScrollEnabled,
+                             ScrollMode scrollMode,
+                             HibernateTransactionSupplier transactionSupplier) {
         this.sessionFactory = aSessionFactory;
         this.isScrollEnabled = isScrollEnabled;
         this.scrollMode = scrollMode;
+        this.transactionSupplier = transactionSupplier;
     }
 
     /**
@@ -114,7 +123,7 @@ public class HibernateStore implements DataStore {
         Session session = sessionFactory.getCurrentSession();
         Preconditions.checkNotNull(session);
         session.beginTransaction();
-        return new HibernateTransaction(session);
+        return transactionSupplier.get(session, isScrollEnabled, scrollMode);
     }
 
     @Override
@@ -123,6 +132,14 @@ public class HibernateStore implements DataStore {
         Preconditions.checkNotNull(session);
         session.beginTransaction();
         session.setDefaultReadOnly(true);
-        return new HibernateTransaction(session, isScrollEnabled, scrollMode);
+        return transactionSupplier.get(session, isScrollEnabled, scrollMode);
+    }
+
+    /**
+     * Functional interface for describing a method to supply a custom Hibernate transaction.
+     */
+    @FunctionalInterface
+    public interface HibernateTransactionSupplier {
+        HibernateTransaction get(Session session, boolean isScrollEnabled, ScrollMode scrollMode);
     }
 }

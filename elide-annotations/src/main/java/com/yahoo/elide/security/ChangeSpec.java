@@ -17,4 +17,21 @@ public class ChangeSpec {
     @Getter private final String fieldName;
     @Getter private final Object original;
     @Getter private final Object modified;
+
+    @Override
+    public String toString() {
+        return String.format("ChangeSpec { resource=%s, field=%s, original=%s, modified=%s}",
+                safe(resource),
+                fieldName,
+                safe(original),
+                safe(modified));
+    }
+
+    private String safe(Object object) {
+        try {
+            return String.valueOf(object);
+        } catch (Exception e) {
+            return e.toString();
+        }
+    }
 }

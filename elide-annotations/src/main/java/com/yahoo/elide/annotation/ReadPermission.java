@@ -5,17 +5,15 @@
  */
 package com.yahoo.elide.annotation;
 
-import com.yahoo.elide.security.checks.InlineCheck;
-
-import java.lang.annotation.Inherited;
-import java.lang.annotation.Retention;
-import java.lang.annotation.Target;
-
 import static java.lang.annotation.ElementType.FIELD;
 import static java.lang.annotation.ElementType.METHOD;
 import static java.lang.annotation.ElementType.PACKAGE;
 import static java.lang.annotation.ElementType.TYPE;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
+
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Retention;
+import java.lang.annotation.Target;
 
 /**
  * Assign custom Read permission checks.
@@ -24,24 +22,6 @@ import static java.lang.annotation.RetentionPolicy.RUNTIME;
 @Retention(RUNTIME)
 @Inherited
 public @interface ReadPermission {
-
-    /**
-     * Any one of these checks must pass.
-     *
-     * @return the array of check classes
-     * @deprecated as of 2.2, use {@link #expression()} instead.
-     */
-    @Deprecated
-    Class<? extends InlineCheck>[] any() default {};
-
-    /**
-     * All of these checks must pass.
-     *
-     * @return the array of check classes
-     * @deprecated as of 2.2, use {@link #expression()} instead.
-     */
-    @Deprecated
-    Class<? extends InlineCheck>[] all() default {};
 
     /**
      * An expression of checks that will be parsed via ANTLR. For example:

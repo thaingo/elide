@@ -5,6 +5,8 @@
  */
 package com.yahoo.elide.core;
 
+import com.yahoo.elide.ElideSettings;
+import com.yahoo.elide.ElideSettingsBuilder;
 import com.yahoo.elide.annotation.CreatePermission;
 import com.yahoo.elide.annotation.DeletePermission;
 import com.yahoo.elide.annotation.ReadPermission;
@@ -14,13 +16,13 @@ import com.yahoo.elide.audit.TestAuditLogger;
 import com.yahoo.elide.core.exceptions.ForbiddenAccessException;
 import com.yahoo.elide.security.PermissionExecutor;
 import com.yahoo.elide.security.User;
-
 import com.yahoo.elide.security.executors.ActivePermissionExecutor;
+
 import example.FunWithPermissions;
+import example.TestCheckMappings;
+
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
-
-import java.util.HashMap;
 
 /**
  * Tests audit functions inside RecordDao.
@@ -35,7 +37,7 @@ public class PermissionAnnotationTest {
     public PermissionAnnotationTest() {
         goodUser = new User(3);
         badUser = new User(-1);
-        dictionary = new EntityDictionary(new HashMap<>());
+        dictionary = new EntityDictionary(TestCheckMappings.MAPPINGS);
     }
 
     @BeforeTest
@@ -46,8 +48,18 @@ public class PermissionAnnotationTest {
         fun.setId(1);
 
         AuditLogger testLogger = new TestAuditLogger();
-        funRecord = new PersistentResource<>(fun, new RequestScope(null, null, goodUser, dictionary, null, testLogger));
-        badRecord = new PersistentResource<>(fun, new RequestScope(null, null, badUser, dictionary, null, testLogger));
+
+        ElideSettings elideSettings = new ElideSettingsBuilder(null)
+                .withDefaultPageSize(10)
+                .withDefaultMaxPageSize(10)
+                .withAuditLogger(testLogger)
+                .withEntityDictionary(dictionary)
+                .build();
+
+        RequestScope goodScope = new RequestScope(null, null, null, goodUser, null, elideSettings, false);
+        funRecord = new PersistentResource<>(fun, null, goodScope.getUUIDFor(fun), goodScope);
+        RequestScope badScope = new RequestScope(null, null, null, badUser, null, elideSettings, false);
+        badRecord = new PersistentResource<>(fun, null, badScope.getUUIDFor(fun), badScope);
     }
 
     @Test

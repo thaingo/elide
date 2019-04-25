@@ -5,29 +5,32 @@
  */
 package com.yahoo.elide.parsers.state;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yahoo.elide.core.HttpStatus;
 import com.yahoo.elide.core.PersistentResource;
 import com.yahoo.elide.core.RelationshipType;
 import com.yahoo.elide.core.RequestScope;
 import com.yahoo.elide.core.exceptions.ForbiddenAccessException;
 import com.yahoo.elide.core.exceptions.InvalidEntityBodyException;
+import com.yahoo.elide.jsonapi.JsonApiMapper;
 import com.yahoo.elide.jsonapi.document.processors.DocumentProcessor;
 import com.yahoo.elide.jsonapi.document.processors.IncludedProcessor;
 import com.yahoo.elide.jsonapi.models.Data;
 import com.yahoo.elide.jsonapi.models.JsonApiDocument;
 import com.yahoo.elide.jsonapi.models.Relationship;
 import com.yahoo.elide.jsonapi.models.Resource;
+
+import com.fasterxml.jackson.databind.JsonNode;
+
 import org.apache.commons.lang3.tuple.Pair;
 
-import javax.ws.rs.core.MultivaluedMap;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.function.Supplier;
+
+import javax.ws.rs.core.MultivaluedMap;
 
 /**
  * State to handle relationships.
@@ -48,7 +51,7 @@ public class RelationshipTerminalState extends BaseState {
     public Supplier<Pair<Integer, JsonNode>> handleGet(StateContext state) {
         JsonApiDocument doc = new JsonApiDocument();
         RequestScope requestScope = state.getRequestScope();
-        ObjectMapper mapper = requestScope.getMapper().getObjectMapper();
+        JsonApiMapper mapper = requestScope.getMapper();
         Optional<MultivaluedMap<String, String>> queryParams = requestScope.getQueryParams();
 
         Map<String, Relationship> relationships = record.toResourceWithSortingAndPagination().getRelationships();
@@ -68,7 +71,7 @@ public class RelationshipTerminalState extends BaseState {
             DocumentProcessor includedProcessor = new IncludedProcessor();
             includedProcessor.execute(doc, record, queryParams);
 
-            return () -> Pair.of(HttpStatus.SC_OK, mapper.convertValue(doc, JsonNode.class));
+            return () -> Pair.of(HttpStatus.SC_OK, mapper.toJsonObject(doc));
         }
 
         // Handle no data for relationship
@@ -79,7 +82,7 @@ public class RelationshipTerminalState extends BaseState {
         } else {
             throw new IllegalStateException("Failed to GET a relationship; relationship is neither toMany nor toOne");
         }
-        return () -> Pair.of(HttpStatus.SC_OK, mapper.convertValue(doc, JsonNode.class));
+        return () -> Pair.of(HttpStatus.SC_OK, mapper.toJsonObject(doc));
     }
 
     @Override
@@ -97,10 +100,15 @@ public class RelationshipTerminalState extends BaseState {
         return handleRequest(state, this::delete);
     }
 
+    /*
+     * Base on the JSON API docs relationship updates MUST return 204 unless the server has made additional modification
+     * to the relationship. http://jsonapi.org/format/#crud-updating-relationship-responses
+     */
     private Supplier<Pair<Integer, JsonNode>> handleRequest(StateContext state,
-                                                           BiFunction<Data<Resource>, RequestScope, Boolean> handler) {
+                                                            BiFunction<Data<Resource>, RequestScope, Boolean> handler) {
         Data<Resource> data = state.getJsonApiDocument().getData();
         handler.apply(data, state.getRequestScope());
+        // TODO: figure out if we've made modifications that differ from those requested by client
         return () -> Pair.of(HttpStatus.SC_NO_CONTENT, null);
     }
 

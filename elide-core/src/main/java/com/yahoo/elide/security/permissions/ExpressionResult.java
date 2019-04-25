@@ -5,54 +5,29 @@
  */
 package com.yahoo.elide.security.permissions;
 
-import lombok.Getter;
+import static org.fusesource.jansi.Ansi.ansi;
+
+import org.fusesource.jansi.Ansi;
 
 /**
  * Expression results.
  */
-public class ExpressionResult {
-    @Getter private final Status status;
-    @Getter private final String failureMessage;
+public enum ExpressionResult {
+        PASS("PASSED", Ansi.Color.GREEN),
+        FAIL("FAILED", Ansi.Color.RED),
+        DEFERRED("WAS DEFERRED", Ansi.Color.YELLOW),
+        UNEVALUATED("WAS UNEVALUATED", Ansi.Color.BLUE);
 
-    public static final ExpressionResult PASS_RESULT = new ExpressionResult(Status.PASS);
-    public static final ExpressionResult DEFERRED_RESULT = new ExpressionResult(Status.DEFERRED);
+    private final String name;
+    private final Ansi.Color color;
 
-    /**
-     * Result status.
-     */
-    public enum Status {
-        PASS,
-        FAIL,
-        DEFERRED
-    }
-
-    /**
-     * Constructor.
-     *
-     * @param status Status to return
-     * @param failureMessage Message associated with failure
-     */
-    public ExpressionResult(final Status status, final String failureMessage) {
-        this.status = status;
-        this.failureMessage = failureMessage;
-    }
-
-    /**
-     * Constructor.
-     *
-     * @param status Status to return
-     */
-    public ExpressionResult(final Status status) {
-        this(status, null);
+    ExpressionResult(String name, Ansi.Color color) {
+        this.name = name;
+        this.color = color;
     }
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder();
-        sb.append(status);
-        if (failureMessage != null) {
-            sb.append(": ").append(failureMessage);
-        }
-        return sb.toString();
+        return ansi().fg(color).a(name).reset().toString();
     }
 }

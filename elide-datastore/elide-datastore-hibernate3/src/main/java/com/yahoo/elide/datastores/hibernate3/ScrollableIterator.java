@@ -7,10 +7,11 @@ package com.yahoo.elide.datastores.hibernate3;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterators;
-import lombok.NonNull;
+
 import org.hibernate.ScrollableResults;
 
-import java.util.Collections;
+import lombok.NonNull;
+
 import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 
@@ -22,10 +23,12 @@ import java.util.Iterator;
 public class ScrollableIterator<T> implements Iterable<T>, Iterator<T> {
     private final ScrollableResults scroll;
     private boolean inUse = false;
-    private boolean hasNext;
+    private boolean hasNext = false;
 
     public ScrollableIterator(ScrollableResults scroll) {
         this.scroll = scroll;
+
+        hasNext = scroll.next();
     }
 
     @Override
@@ -34,12 +37,7 @@ public class ScrollableIterator<T> implements Iterable<T>, Iterator<T> {
             throw new ConcurrentModificationException();
         }
 
-        if (!scroll.first()) {
-            return Collections.emptyListIterator();
-        }
-
         inUse = true;
-        hasNext = true;
         return Iterators.unmodifiableIterator(this);
     }
 

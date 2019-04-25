@@ -5,9 +5,13 @@
  */
 package example;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.yahoo.elide.annotation.ComputedAttribute;
+import com.yahoo.elide.annotation.Exclude;
 import com.yahoo.elide.annotation.Include;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
+import java.util.Set;
 
 import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
@@ -16,7 +20,6 @@ import javax.persistence.Id;
 import javax.persistence.OneToMany;
 import javax.persistence.OneToOne;
 import javax.persistence.Transient;
-import java.util.Set;
 
 /**
  * Used to test computed attributes.
@@ -65,6 +68,7 @@ public class User {
 
     /**
      * Sets the password but first reverses it.
+     * @param password password to encode
      */
     @ComputedAttribute
     @Transient
@@ -77,6 +81,7 @@ public class User {
      *
      * @return the 'encrypted' password
      */
+    @Exclude
     public String getReversedPassword() {
         return reversedPassword;
     }

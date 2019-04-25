@@ -1,57 +1,54 @@
 /*
- * Copyright 2016, Yahoo Inc.
+ * Copyright 2018, Oath Inc.
  * Licensed under the Apache License, Version 2.0
  * See LICENSE file in project root for terms.
  */
 package com.yahoo.elide;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.yahoo.elide.audit.AuditLogger;
-import com.yahoo.elide.audit.Slf4jLogger;
 import com.yahoo.elide.core.DataStore;
 import com.yahoo.elide.core.DataStoreTransaction;
-import com.yahoo.elide.core.EntityDictionary;
+import com.yahoo.elide.core.ErrorObjects;
 import com.yahoo.elide.core.HttpStatus;
 import com.yahoo.elide.core.RequestScope;
+import com.yahoo.elide.core.datastore.inmemory.InMemoryDataStore;
+import com.yahoo.elide.core.exceptions.CustomErrorException;
 import com.yahoo.elide.core.exceptions.ForbiddenAccessException;
-import com.yahoo.elide.core.exceptions.JsonPatchExtensionException;
-import com.yahoo.elide.security.PermissionExecutor;
-import com.yahoo.elide.security.SecurityMode;
 import com.yahoo.elide.core.exceptions.HttpStatusException;
+import com.yahoo.elide.core.exceptions.InternalServerErrorException;
+import com.yahoo.elide.core.exceptions.InvalidConstraintException;
 import com.yahoo.elide.core.exceptions.InvalidURLException;
+import com.yahoo.elide.core.exceptions.JsonPatchExtensionException;
 import com.yahoo.elide.core.exceptions.TransactionException;
 import com.yahoo.elide.extensions.JsonApiPatch;
 import com.yahoo.elide.extensions.PatchRequestScope;
 import com.yahoo.elide.jsonapi.JsonApiMapper;
 import com.yahoo.elide.jsonapi.models.JsonApiDocument;
+import com.yahoo.elide.parsers.BaseVisitor;
 import com.yahoo.elide.parsers.DeleteVisitor;
 import com.yahoo.elide.parsers.GetVisitor;
+import com.yahoo.elide.parsers.JsonApiParser;
 import com.yahoo.elide.parsers.PatchVisitor;
 import com.yahoo.elide.parsers.PostVisitor;
-import com.yahoo.elide.generated.parsers.CoreLexer;
-import com.yahoo.elide.generated.parsers.CoreParser;
 import com.yahoo.elide.security.User;
-import com.yahoo.elide.security.executors.ActivePermissionExecutor;
-import lombok.extern.slf4j.Slf4j;
-import org.antlr.v4.runtime.ANTLRInputStream;
-import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CommonTokenStream;
-import org.antlr.v4.runtime.RecognitionException;
-import org.antlr.v4.runtime.Recognizer;
+import com.yahoo.elide.utils.coerce.CoerceUtil;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+
 import org.antlr.v4.runtime.misc.ParseCancellationException;
-import org.antlr.v4.runtime.tree.ParseTree;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 
-import javax.ws.rs.core.MultivaluedMap;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+
 import java.io.IOException;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
-import java.nio.file.Paths;
-import java.util.HashMap;
-import java.util.function.Function;
 import java.util.function.Supplier;
+
+import javax.validation.ConstraintViolationException;
+import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.core.MultivaluedMap;
 
 /**
  * REST Entry point handler.
@@ -59,450 +56,98 @@ import java.util.function.Supplier;
 @Slf4j
 public class Elide {
 
-    private final AuditLogger auditLogger;
-    private final DataStore dataStore;
-    private final EntityDictionary dictionary;
-    private final JsonApiMapper mapper;
-    private final Function<RequestScope, PermissionExecutor> permissionExecutor;
+    @Getter private final ElideSettings elideSettings;
+    @Getter private final AuditLogger auditLogger;
+    @Getter private final DataStore dataStore;
+    @Getter private final JsonApiMapper mapper;
 
     /**
-     * Instantiates a new Elide.
+     * Instantiates a new Elide instance.
      *
-     * @param auditLogger the audit logger
-     * @param dataStore the dataStore
-     * @param dictionary the dictionary
-     * @deprecated Since 2.1, use the {@link Elide.Builder} instead
+     * @param elideSettings Elide settings object
      */
-    @Deprecated
-    public Elide(AuditLogger auditLogger, DataStore dataStore, EntityDictionary dictionary) {
-        this(auditLogger, dataStore, dictionary, new JsonApiMapper(dictionary));
+    public Elide(ElideSettings elideSettings) {
+        this.elideSettings = elideSettings;
+        this.auditLogger = elideSettings.getAuditLogger();
+        this.dataStore = new InMemoryDataStore(elideSettings.getDataStore());
+        this.dataStore.populateEntityDictionary(elideSettings.getDictionary());
+        this.mapper = elideSettings.getMapper();
+
+        elideSettings.getSerdes().forEach((targetType, serde) -> {
+            CoerceUtil.register(targetType, serde);
+        });
     }
 
     /**
-     * Instantiates a new Elide.
+     * Handle GET.
      *
-     * @param auditLogger the audit logger
-     * @param dataStore the dataStore
-     * @deprecated Since 2.1, use the {@link Elide.Builder} instead
+     * @param path the path
+     * @param queryParams the query params
+     * @param opaqueUser the opaque user
+     * @return Elide response object
      */
-    @Deprecated
-    public Elide(AuditLogger auditLogger, DataStore dataStore) {
-        this(auditLogger, dataStore, new EntityDictionary(new HashMap<>()));
+    public ElideResponse get(String path, MultivaluedMap<String, String> queryParams, Object opaqueUser) {
+        return handleRequest(true, opaqueUser, dataStore::beginReadTransaction, (tx, user) -> {
+            JsonApiDocument jsonApiDoc = new JsonApiDocument();
+            RequestScope requestScope = new RequestScope(path, jsonApiDoc, tx, user, queryParams, elideSettings, false);
+            BaseVisitor visitor = new GetVisitor(requestScope);
+            return visit(path, requestScope, visitor);
+        });
+
     }
 
     /**
-     * Instantiates a new Elide.
+     * Handle POST.
      *
-     * @param auditLogger the audit logger
-     * @param dataStore the dataStore
-     * @param dictionary the dictionary
-     * @param mapper Serializer/Deserializer for JSON API
-     * @deprecated Since 2.1, use the {@link Elide.Builder} instead
+     * @param path the path
+     * @param jsonApiDocument the json api document
+     * @param opaqueUser the opaque user
+     * @return Elide response object
      */
-    @Deprecated
-    public Elide(AuditLogger auditLogger, DataStore dataStore, EntityDictionary dictionary, JsonApiMapper mapper) {
-        this(auditLogger, dataStore, dictionary, mapper, ActivePermissionExecutor::new);
+    public ElideResponse post(String path, String jsonApiDocument, Object opaqueUser) {
+        return handleRequest(false, opaqueUser, dataStore::beginTransaction, (tx, user) -> {
+            JsonApiDocument jsonApiDoc = mapper.readJsonApiDocument(jsonApiDocument);
+            RequestScope requestScope = new RequestScope(path, jsonApiDoc, tx, user, null, elideSettings, false);
+            BaseVisitor visitor = new PostVisitor(requestScope);
+            return visit(path, requestScope, visitor);
+        });
     }
 
     /**
-     * Instantiates a new Elide.
+     * Handle PATCH.
      *
-     * @param auditLogger the audit logger
-     * @param dataStore the dataStore
-     * @param dictionary the dictionary
-     * @param mapper Serializer/Deserializer for JSON API
-     * @param permissionExecutor Custom permission executor implementation
+     * @param contentType the content type
+     * @param accept the accept
+     * @param path the path
+     * @param jsonApiDocument the json api document
+     * @param opaqueUser the opaque user
+     * @return Elide response object
      */
-    protected Elide(AuditLogger auditLogger,
-                  DataStore dataStore,
-                  EntityDictionary dictionary,
-                  JsonApiMapper mapper,
-                  Function<RequestScope, PermissionExecutor> permissionExecutor) {
-        this.auditLogger = auditLogger;
-        this.dataStore = dataStore;
-        this.dictionary = dictionary;
-        dataStore.populateEntityDictionary(dictionary);
-        this.mapper = mapper;
-        this.permissionExecutor = permissionExecutor;
-    }
+    public ElideResponse patch(String contentType, String accept,
+                               String path, String jsonApiDocument, Object opaqueUser) {
 
-    /**
-     * Elide Builder for constructing an Elide instance.
-     */
-    public static class Builder {
-        private final DataStore dataStore;
-        private AuditLogger auditLogger;
-        private JsonApiMapper jsonApiMapper;
-        private EntityDictionary entityDictionary = new EntityDictionary(new HashMap<>());
-        private Function<RequestScope, PermissionExecutor> permissionExecutorFunction = ActivePermissionExecutor::new;
-
-        /**
-         * A new builder used to generate Elide instances. Instantiates an {@link EntityDictionary} without
-         * providing a mapping of security checks.
-         *
-         * @param auditLogger the logger to use for audit annotations
-         * @param dataStore the datastore used to communicate with the persistence layer
-         * @deprecated 2.3 use {@link #Builder(DataStore)}
-         */
-        public Builder(AuditLogger auditLogger, DataStore dataStore) {
-            this.auditLogger = auditLogger;
-            this.dataStore = dataStore;
-            this.jsonApiMapper = new JsonApiMapper(entityDictionary);
-        }
-
-        /**
-         * A new builder used to generate Elide instances. Instantiates an {@link EntityDictionary} without
-         * providing a mapping of security checks and uses the provided {@link Slf4jLogger} for audit.
-         *
-         * @param dataStore the datastore used to communicate with the persistence layer
-         */
-        public Builder(DataStore dataStore) {
-            this.dataStore = dataStore;
-            this.auditLogger = new Slf4jLogger();
-            this.jsonApiMapper = new JsonApiMapper(entityDictionary);
-        }
-
-        public Elide build() {
-            return new Elide(auditLogger, dataStore, entityDictionary, jsonApiMapper, permissionExecutorFunction);
-        }
-
-        @Deprecated
-        public Builder auditLogger(final AuditLogger auditLogger) {
-            return withAuditLogger(auditLogger);
-        }
-
-        @Deprecated
-        public Builder entityDictionary(final EntityDictionary entityDictionary) {
-            return withEntityDictionary(entityDictionary);
-        }
-
-        @Deprecated
-        public Builder jsonApiMapper(final JsonApiMapper jsonApiMapper) {
-            return withJsonApiMapper(jsonApiMapper);
-        }
-
-        @Deprecated
-        public Builder permissionExecutor(final Function<RequestScope, PermissionExecutor> permissionExecutorFunction) {
-            return withPermissionExecutor(permissionExecutorFunction);
-        }
-
-        @Deprecated
-        public Builder permissionExecutor(final Class<? extends PermissionExecutor> permissionExecutorClass) {
-            return withPermissionExecutor(permissionExecutorClass);
-        }
-
-        public Builder withAuditLogger(AuditLogger auditLogger) {
-            this.auditLogger = auditLogger;
-            return this;
-        }
-
-        public Builder withEntityDictionary(EntityDictionary entityDictionary) {
-            this.entityDictionary = entityDictionary;
-            return this;
-        }
-
-        public Builder withJsonApiMapper(JsonApiMapper jsonApiMapper) {
-            this.jsonApiMapper = jsonApiMapper;
-            return this;
-        }
-
-        public Builder withPermissionExecutor(Function<RequestScope, PermissionExecutor> permissionExecutorFunction) {
-            this.permissionExecutorFunction = permissionExecutorFunction;
-            return this;
-        }
-
-        public Builder withPermissionExecutor(Class<? extends PermissionExecutor> permissionExecutorClass) {
-            permissionExecutorFunction = (requestScope) -> {
+        Handler<DataStoreTransaction, User, HandlerResult> handler;
+        if (JsonApiPatch.isPatchExtension(contentType) && JsonApiPatch.isPatchExtension(accept)) {
+            handler = (tx, user) -> {
+                PatchRequestScope requestScope = new PatchRequestScope(path, tx, user, elideSettings);
                 try {
-                    try {
-                        // Try to find a constructor with request scope
-                        Constructor<? extends PermissionExecutor> ctor =
-                                permissionExecutorClass.getDeclaredConstructor(RequestScope.class);
-                        return ctor.newInstance(requestScope);
-                    } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException
-                            | InstantiationException e) {
-                        // If that fails, try blank constructor
-                        return permissionExecutorClass.newInstance();
-                    }
-                } catch (IllegalAccessException | InstantiationException e) {
-                    // Everything failed. Throw hands up, not sure how to proceed.
-                    throw new RuntimeException(e);
+                    Supplier<Pair<Integer, JsonNode>> responder =
+                            JsonApiPatch.processJsonPatch(dataStore, path, jsonApiDocument, requestScope);
+                    return new HandlerResult(requestScope, responder);
+                } catch (RuntimeException e) {
+                    return new HandlerResult(requestScope, e);
                 }
             };
-            return this;
+        } else {
+            handler = (tx, user) -> {
+                JsonApiDocument jsonApiDoc = mapper.readJsonApiDocument(jsonApiDocument);
+                RequestScope requestScope = new RequestScope(path, jsonApiDoc, tx, user, null, elideSettings, false);
+                BaseVisitor visitor = new PatchVisitor(requestScope);
+                return visit(path, requestScope, visitor);
+            };
         }
-    }
 
-    /**
-     * Handle GET.
-     *
-     * @param path the path
-     * @param queryParams the query params
-     * @param opaqueUser the opaque user
-     * @param securityMode only for test mode
-     * @return Elide response object
-     * @deprecated Since 2.1, instead use the {@link Elide.Builder} with an appropriate {@link PermissionExecutor}
-     */
-    @Deprecated
-    public ElideResponse get(
-            String path,
-            MultivaluedMap<String, String> queryParams,
-            Object opaqueUser,
-            SecurityMode securityMode) {
-
-        RequestScope requestScope = null;
-        boolean isVerbose = false;
-        try (DataStoreTransaction transaction = dataStore.beginReadTransaction()) {
-            final User user = transaction.accessUser(opaqueUser);
-            requestScope = new RequestScope(
-                    new JsonApiDocument(),
-                    transaction,
-                    user,
-                    dictionary,
-                    mapper,
-                    auditLogger,
-                    queryParams,
-                    securityMode,
-                    permissionExecutor);
-            isVerbose = requestScope.getPermissionExecutor().isVerbose();
-            GetVisitor visitor = new GetVisitor(requestScope);
-            Supplier<Pair<Integer, JsonNode>> responder = visitor.visit(parse(path));
-            requestScope.getPermissionExecutor().executeCommitChecks();
-            transaction.flush();
-            ElideResponse response = buildResponse(responder.get());
-            auditLogger.commit();
-            transaction.commit();
-            requestScope.runCommitTriggers();
-            traceLogSecurityExceptions(requestScope);
-            return response;
-        } catch (ForbiddenAccessException e) {
-            debugLogSecurityExceptions(requestScope);
-            return buildErrorResponse(e, isVerbose);
-        } catch (HttpStatusException e) {
-            return buildErrorResponse(e, isVerbose);
-        } catch (IOException e) {
-            return buildErrorResponse(new TransactionException(e), isVerbose);
-        } catch (ParseCancellationException e) {
-            return buildErrorResponse(new InvalidURLException(e), isVerbose);
-        }
-    }
-
-    /**
-     * Handle GET.
-     *
-     * @param path the path
-     * @param queryParams the query params
-     * @param opaqueUser the opaque user
-     * @return Elide response object
-     */
-    public ElideResponse get(
-            String path,
-            MultivaluedMap<String, String> queryParams,
-            Object opaqueUser) {
-        return this.get(path, queryParams, opaqueUser, SecurityMode.SECURITY_ACTIVE);
-    }
-
-    /**
-     * Handle POST.
-     *
-     * @param path the path
-     * @param jsonApiDocument the json api document
-     * @param opaqueUser the opaque user
-     * @param securityMode only for test mode
-     * @return Elide response object
-     * @deprecated Since 2.1, instead use the {@link Elide.Builder} with an appropriate {@link PermissionExecutor}
-     */
-    @Deprecated
-    public ElideResponse post(
-            String path,
-            String jsonApiDocument,
-            Object opaqueUser,
-            SecurityMode securityMode) {
-        RequestScope requestScope = null;
-        boolean isVerbose = false;
-        try (DataStoreTransaction transaction = dataStore.beginTransaction()) {
-            User user = transaction.accessUser(opaqueUser);
-            JsonApiDocument doc = mapper.readJsonApiDocument(jsonApiDocument);
-            requestScope = new RequestScope(doc,
-                    transaction,
-                    user,
-                    dictionary,
-                    mapper,
-                    auditLogger,
-                    securityMode,
-                    permissionExecutor);
-            isVerbose = requestScope.getPermissionExecutor().isVerbose();
-            PostVisitor visitor = new PostVisitor(requestScope);
-            Supplier<Pair<Integer, JsonNode>> responder = visitor.visit(parse(path));
-            requestScope.getPermissionExecutor().executeCommitChecks();
-            requestScope.saveObjects();
-            transaction.flush();
-            ElideResponse response = buildResponse(responder.get());
-            auditLogger.commit();
-            transaction.commit();
-            requestScope.runCommitTriggers();
-            traceLogSecurityExceptions(requestScope);
-            return response;
-        } catch (ForbiddenAccessException e) {
-            debugLogSecurityExceptions(requestScope);
-            return buildErrorResponse(e, isVerbose);
-        } catch (HttpStatusException e) {
-            return buildErrorResponse(e, isVerbose);
-        } catch (IOException e) {
-            return buildErrorResponse(new TransactionException(e), isVerbose);
-        } catch (ParseCancellationException e) {
-            return buildErrorResponse(new InvalidURLException(e), isVerbose);
-        }
-    }
-
-    /**
-     * Handle POST.
-     *
-     * @param path the path
-     * @param jsonApiDocument the json api document
-     * @param opaqueUser the opaque user
-     * @return Elide response object
-     */
-    public ElideResponse post(
-            String path,
-            String jsonApiDocument,
-            Object opaqueUser) {
-        return this.post(path, jsonApiDocument, opaqueUser, SecurityMode.SECURITY_ACTIVE);
-    }
-
-    /**
-     * Handle PATCH.
-     *
-     * @param contentType the content type
-     * @param accept the accept
-     * @param path the path
-     * @param jsonApiDocument the json api document
-     * @param opaqueUser the opaque user
-     * @param securityMode only for test mode
-     * @return Elide response object
-     * @deprecated Since 2.1, instead use the {@link Elide.Builder} with an appropriate {@link PermissionExecutor}
-     */
-    @Deprecated
-    public ElideResponse patch(
-            String contentType,
-            String accept,
-            String path,
-            String jsonApiDocument,
-            Object opaqueUser,
-            SecurityMode securityMode) {
-        RequestScope requestScope = null;
-        boolean isVerbose = false;
-        try (DataStoreTransaction transaction = dataStore.beginTransaction()) {
-            User user = transaction.accessUser(opaqueUser);
-
-            Supplier<Pair<Integer, JsonNode>> responder;
-            if (JsonApiPatch.isPatchExtension(contentType) && JsonApiPatch.isPatchExtension(accept)) {
-                // build Outer RequestScope to be used for each action
-                PatchRequestScope patchRequestScope = new PatchRequestScope(
-                        transaction, user, dictionary, mapper, auditLogger);
-                requestScope = patchRequestScope;
-                isVerbose = requestScope.getPermissionExecutor().isVerbose();
-                responder = JsonApiPatch.processJsonPatch(dataStore, path, jsonApiDocument, patchRequestScope);
-            } else {
-                JsonApiDocument doc = mapper.readJsonApiDocument(jsonApiDocument);
-                requestScope = new RequestScope(doc, transaction, user, dictionary, mapper, auditLogger, securityMode,
-                        permissionExecutor);
-                isVerbose = requestScope.getPermissionExecutor().isVerbose();
-                PatchVisitor visitor = new PatchVisitor(requestScope);
-                responder = visitor.visit(parse(path));
-            }
-            requestScope.getPermissionExecutor().executeCommitChecks();
-            requestScope.saveObjects();
-            transaction.flush();
-            ElideResponse response = buildResponse(responder.get());
-            auditLogger.commit();
-            transaction.commit();
-            requestScope.runCommitTriggers();
-            traceLogSecurityExceptions(requestScope);
-            return response;
-        } catch (ForbiddenAccessException e) {
-            debugLogSecurityExceptions(requestScope);
-            return buildErrorResponse(e, isVerbose);
-        } catch (JsonPatchExtensionException e) {
-            return buildResponse(e.getResponse());
-        } catch (HttpStatusException e) {
-            return buildErrorResponse(e, isVerbose);
-        } catch (ParseCancellationException e) {
-            return buildErrorResponse(new InvalidURLException(e), isVerbose);
-        } catch (IOException e) {
-            return buildErrorResponse(new TransactionException(e), isVerbose);
-        }
-    }
-
-    /**
-     * Handle PATCH.
-     *
-     * @param contentType the content type
-     * @param accept the accept
-     * @param path the path
-     * @param jsonApiDocument the json api document
-     * @param opaqueUser the opaque user
-     * @return Elide response object
-     */
-    public ElideResponse patch(
-            String contentType,
-            String accept,
-            String path,
-            String jsonApiDocument,
-            Object opaqueUser) {
-        return this.patch(contentType, accept, path, jsonApiDocument, opaqueUser, SecurityMode.SECURITY_ACTIVE);
-    }
-
-    /**
-     * Handle DELETE.
-     *
-     * @param path the path
-     * @param jsonApiDocument the json api document
-     * @param opaqueUser the opaque user
-     * @param securityMode only for test mode
-     * @return Elide response object
-     * @deprecated Since 2.1, instead use the {@link Elide.Builder} with an appropriate {@link PermissionExecutor}
-     */
-    @Deprecated
-    public ElideResponse delete(
-            String path,
-            String jsonApiDocument,
-            Object opaqueUser,
-            SecurityMode securityMode) {
-        JsonApiDocument doc;
-        RequestScope requestScope = null;
-        boolean isVerbose = false;
-        try (DataStoreTransaction transaction = dataStore.beginTransaction()) {
-            User user = transaction.accessUser(opaqueUser);
-            if (jsonApiDocument != null && !jsonApiDocument.equals("")) {
-                doc = mapper.readJsonApiDocument(jsonApiDocument);
-            } else {
-                doc = new JsonApiDocument();
-            }
-            requestScope = new RequestScope(
-                    doc, transaction, user, dictionary, mapper, auditLogger, securityMode, permissionExecutor);
-            isVerbose = requestScope.getPermissionExecutor().isVerbose();
-            DeleteVisitor visitor = new DeleteVisitor(requestScope);
-            Supplier<Pair<Integer, JsonNode>> responder = visitor.visit(parse(path));
-            requestScope.getPermissionExecutor().executeCommitChecks();
-            requestScope.saveObjects();
-            transaction.flush();
-            ElideResponse response = buildResponse(responder.get());
-            auditLogger.commit();
-            transaction.commit();
-            requestScope.runCommitTriggers();
-            traceLogSecurityExceptions(requestScope);
-            return response;
-        } catch (ForbiddenAccessException e) {
-            debugLogSecurityExceptions(requestScope);
-            return buildErrorResponse(e, isVerbose);
-        } catch (HttpStatusException e) {
-            return buildErrorResponse(e, isVerbose);
-        } catch (IOException e) {
-            return buildErrorResponse(new TransactionException(e), isVerbose);
-        } catch (ParseCancellationException e) {
-            return buildErrorResponse(new InvalidURLException(e), isVerbose);
-        }
+        return handleRequest(false, opaqueUser, dataStore::beginTransaction, handler);
     }
 
     /**
@@ -513,52 +158,120 @@ public class Elide {
      * @param opaqueUser the opaque user
      * @return Elide response object
      */
-    public ElideResponse delete(
-            String path,
-            String jsonApiDocument,
-            Object opaqueUser) {
-        return this.delete(path, jsonApiDocument, opaqueUser, SecurityMode.SECURITY_ACTIVE);
-    }
-
-    /**
-     * Compile request to AST.
-     *
-     * @param path request
-     * @return AST parse tree
-     */
-    public static ParseTree parse(String path) {
-        path = Paths.get(path).normalize().toString();
-        if (path.startsWith("/")) {
-            path = path.substring(1);
-        }
-        ANTLRInputStream is = new ANTLRInputStream(path);
-        CoreLexer lexer = new CoreLexer(is);
-        lexer.removeErrorListeners();
-        lexer.addErrorListener(new BaseErrorListener() {
-            @Override
-            public void syntaxError(Recognizer<?, ?> recognizer, Object offendingSymbol, int line,
-                    int charPositionInLine, String msg, RecognitionException e) {
-                throw new ParseCancellationException(msg, e);
-            }
+    public ElideResponse delete(String path, String jsonApiDocument, Object opaqueUser) {
+        return handleRequest(false, opaqueUser, dataStore::beginTransaction, (tx, user) -> {
+            JsonApiDocument jsonApiDoc = StringUtils.isEmpty(jsonApiDocument)
+                    ? new JsonApiDocument()
+                    : mapper.readJsonApiDocument(jsonApiDocument);
+            RequestScope requestScope = new RequestScope(path, jsonApiDoc, tx, user, null, elideSettings, false);
+            BaseVisitor visitor = new DeleteVisitor(requestScope);
+            return visit(path, requestScope, visitor);
         });
-        CoreParser parser = new CoreParser(new CommonTokenStream(lexer));
-        parser.setErrorHandler(new BailErrorStrategy());
-        return parser.start();
     }
 
-    protected void traceLogSecurityExceptions(RequestScope scope) {
-        if (scope != null && log.isTraceEnabled())  {
-            log.trace(scope.getAuthFailureReason());
+    public HandlerResult visit(String path, RequestScope requestScope, BaseVisitor visitor) {
+        try {
+            Supplier<Pair<Integer, JsonNode>> responder = visitor.visit(JsonApiParser.parse(path));
+            return new HandlerResult(requestScope, responder);
+        } catch (RuntimeException e) {
+            return new HandlerResult(requestScope, e);
         }
     }
 
-    protected void debugLogSecurityExceptions(RequestScope scope) {
-        if (scope != null && log.isDebugEnabled())  {
-            log.debug(scope.getAuthFailureReason());
+    /**
+     * Handle JSON API requests.
+     *
+     * @param isReadOnly if the transaction is read only
+     * @param opaqueUser the user object from the container
+     * @param transaction a transaction supplier
+     * @param handler a function that creates the request scope and request handler
+     * @return the response
+     */
+    protected ElideResponse handleRequest(boolean isReadOnly, Object opaqueUser,
+                                          Supplier<DataStoreTransaction> transaction,
+                                          Handler<DataStoreTransaction, User, HandlerResult> handler) {
+        boolean isVerbose = false;
+        try (DataStoreTransaction tx = transaction.get()) {
+            final User user = tx.accessUser(opaqueUser);
+            HandlerResult result = handler.handle(tx, user);
+            RequestScope requestScope = result.getRequestScope();
+            isVerbose = requestScope.getPermissionExecutor().isVerbose();
+            Supplier<Pair<Integer, JsonNode>> responder = result.getResponder();
+            tx.preCommit();
+            requestScope.runQueuedPreSecurityTriggers();
+            requestScope.getPermissionExecutor().executeCommitChecks();
+            if (!isReadOnly) {
+                requestScope.saveOrCreateObjects();
+            }
+            tx.flush(requestScope);
+
+            requestScope.runQueuedPreCommitTriggers();
+
+            ElideResponse response = buildResponse(responder.get());
+
+            auditLogger.commit(requestScope);
+            tx.commit(requestScope);
+            requestScope.runQueuedPostCommitTriggers();
+
+            if (log.isTraceEnabled()) {
+                requestScope.getPermissionExecutor().printCheckStats();
+            }
+
+            return response;
+
+        } catch (WebApplicationException e) {
+            throw e;
+
+        } catch (ForbiddenAccessException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("{}", e.getLoggedMessage());
+            }
+            return buildErrorResponse(e, isVerbose);
+
+        } catch (JsonPatchExtensionException e) {
+            log.debug("JSON patch extension exception caught", e);
+            return buildErrorResponse(e, isVerbose);
+
+        } catch (HttpStatusException e) {
+            log.debug("Caught HTTP status exception", e);
+            return buildErrorResponse(e, isVerbose);
+
+        } catch (IOException e) {
+            log.error("IO Exception uncaught by Elide", e);
+            return buildErrorResponse(new TransactionException(e), isVerbose);
+
+        } catch (ParseCancellationException e) {
+            log.debug("Parse cancellation exception uncaught by Elide (i.e. invalid URL)", e);
+            return buildErrorResponse(new InvalidURLException(e), isVerbose);
+
+        } catch (ConstraintViolationException e) {
+            log.debug("Constraint violation exception caught", e);
+            String message = "Constraint violation";
+            if (!e.getConstraintViolations().isEmpty()) {
+                // Return error for the first constraint violation
+                message = e.getConstraintViolations().iterator().next().getMessage();
+            }
+            return buildErrorResponse(new InvalidConstraintException(message), isVerbose);
+
+        } catch (Exception | Error e) {
+            log.error("Error or exception uncaught by Elide", e);
+            throw e;
+
+        } finally {
+            auditLogger.clear();
         }
     }
 
     protected ElideResponse buildErrorResponse(HttpStatusException error, boolean isVerbose) {
+        if (error instanceof InternalServerErrorException) {
+            log.error("Internal Server Error", error);
+        }
+        if (!(error instanceof CustomErrorException) && elideSettings.isReturnErrorObjects()) {
+            ErrorObjects errors = ErrorObjects.builder().addError()
+                    .withDetail(isVerbose ? error.getVerboseMessage() : error.toString()).build();
+            JsonNode responseBody = mapper.getObjectMapper().convertValue(errors, JsonNode.class);
+            return buildResponse(Pair.of(error.getStatus(), responseBody));
+        }
         return buildResponse(isVerbose ? error.getVerboseErrorResponse() : error.getErrorResponse());
     }
 
@@ -566,10 +279,52 @@ public class Elide {
         try {
             JsonNode responseNode = response.getRight();
             Integer responseCode = response.getLeft();
-            String body = mapper.writeJsonApiDocument(responseNode);
+            String body = responseNode == null ? null : mapper.writeJsonApiDocument(responseNode);
             return new ElideResponse(responseCode, body);
         } catch (JsonProcessingException e) {
             return new ElideResponse(HttpStatus.SC_INTERNAL_SERVER_ERROR, e.toString());
+        }
+    }
+
+    /**
+     * A function that sets up the request handling objects.
+     *
+     * @param <DataStoreTransaction> the request's transaction
+     * @param <User> the request's user
+     * @param <HandlerResult> the request handling objects
+     */
+    @FunctionalInterface
+    public interface Handler<DataStoreTransaction, User, HandlerResult> {
+        HandlerResult handle(DataStoreTransaction a, User b) throws IOException;
+    }
+
+    /**
+     * A wrapper to return multiple values, less verbose than Pair.
+     */
+    protected static class HandlerResult {
+        protected RequestScope requestScope;
+        protected Supplier<Pair<Integer, JsonNode>> result;
+        protected RuntimeException cause;
+
+        protected HandlerResult(RequestScope requestScope, Supplier<Pair<Integer, JsonNode>> result) {
+            this.requestScope = requestScope;
+            this.result = result;
+        }
+
+        public HandlerResult(RequestScope requestScope, RuntimeException cause) {
+            this.requestScope = requestScope;
+            this.cause = cause;
+        }
+
+        public Supplier<Pair<Integer, JsonNode>> getResponder() {
+            if (cause != null) {
+                throw cause;
+            }
+            return result;
+        }
+
+        public RequestScope getRequestScope() {
+            return requestScope;
         }
     }
 }

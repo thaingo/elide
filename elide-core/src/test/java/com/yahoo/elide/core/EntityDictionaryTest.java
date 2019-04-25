@@ -5,7 +5,22 @@
  */
 package com.yahoo.elide.core;
 
+import static org.mockito.Mockito.mock;
+
+import com.yahoo.elide.annotation.ComputedAttribute;
+import com.yahoo.elide.annotation.Exclude;
+import com.yahoo.elide.annotation.Include;
+import com.yahoo.elide.annotation.MappedInterface;
+import com.yahoo.elide.annotation.OnUpdatePreSecurity;
 import com.yahoo.elide.annotation.ReadPermission;
+import com.yahoo.elide.functions.LifeCycleHook;
+import com.yahoo.elide.models.generics.Employee;
+import com.yahoo.elide.models.generics.Manager;
+import com.yahoo.elide.security.checks.prefab.Collections.AppendOnly;
+import com.yahoo.elide.security.checks.prefab.Collections.RemoveOnly;
+import com.yahoo.elide.security.checks.prefab.Common.UpdateOnCreate;
+import com.yahoo.elide.security.checks.prefab.Role;
+
 import example.Child;
 import example.FieldAnnotations;
 import example.FunWithPermissions;
@@ -14,13 +29,11 @@ import example.Parent;
 import example.Right;
 import example.StringId;
 import example.User;
+
 import org.testng.Assert;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
 
-import javax.persistence.Entity;
-import javax.persistence.GeneratedValue;
-import javax.persistence.Id;
 import java.lang.annotation.Annotation;
 import java.util.Arrays;
 import java.util.Collection;
@@ -29,10 +42,21 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import javax.persistence.AccessType;
+import javax.persistence.Entity;
+import javax.persistence.GeneratedValue;
+import javax.persistence.Id;
+import javax.persistence.Transient;
+
 public class EntityDictionaryTest extends EntityDictionary {
 
     //Test class to validate inheritance logic
+    @Include(rootLevel = true, type = "friend")
     private class Friend extends Child { }
+
+    public EntityDictionaryTest() {
+        super(Collections.EMPTY_MAP);
+    }
 
     @BeforeTest
     public void init() {
@@ -45,6 +69,19 @@ public class EntityDictionaryTest extends EntityDictionary {
         this.bindEntity(StringId.class);
         this.bindEntity(Friend.class);
         this.bindEntity(FieldAnnotations.class);
+        this.bindEntity(Manager.class);
+        this.bindEntity(Employee.class);
+
+        checkNames.forcePut("user has all access", Role.ALL.class);
+    }
+
+    @Test
+    public void testFindCheckByExpression() {
+        Assert.assertEquals(getCheckIdentifier(Role.ALL.class), "user has all access");
+        Assert.assertEquals(getCheckIdentifier(Role.NONE.class), "Prefab.Role.None");
+        Assert.assertEquals(getCheckIdentifier(AppendOnly.class), "Prefab.Collections.AppendOnly");
+        Assert.assertEquals(getCheckIdentifier(RemoveOnly.class), "Prefab.Collections.RemoveOnly");
+        Assert.assertEquals(getCheckIdentifier(UpdateOnCreate.class), "Prefab.Common.UpdateOnCreate");
     }
 
     @Test
@@ -58,6 +95,157 @@ public class EntityDictionaryTest extends EntityDictionary {
     }
 
     @Test
+    public void testBindingInitializerPriorToBindingEntityClass() {
+        @Entity
+        @Include
+        class Foo {
+            @Id
+            private long id;
+
+            private int bar;
+        }
+
+        Initializer<Foo> initializer = mock(Initializer.class);
+        this.bindInitializer(initializer, Foo.class);
+
+        Assert.assertEquals(this.getAllFields(Foo.class).size(), 1);
+    }
+
+    @Test
+    public void testBindingTriggerPriorToBindingEntityClass1() {
+        @Entity
+        @Include
+        class Foo2 {
+            @Id
+            private long id;
+
+            private int bar;
+        }
+
+        LifeCycleHook<Foo2> trigger = mock(LifeCycleHook.class);
+
+        this.bindTrigger(Foo2.class, OnUpdatePreSecurity.class, "bar", trigger);
+        Assert.assertEquals(this.getAllFields(Foo2.class).size(), 1);
+    }
+
+    @Test
+    public void testBindingTriggerPriorToBindingEntityClass2() {
+        @Entity
+        @Include
+        class Foo3 {
+            @Id
+            private long id;
+
+            private int bar;
+        }
+
+        LifeCycleHook<Foo3> trigger = mock(LifeCycleHook.class);
+
+        this.bindTrigger(Foo3.class, OnUpdatePreSecurity.class, trigger, true);
+        Assert.assertEquals(this.getAllFields(Foo3.class).size(), 1);
+    }
+
+    @Test
+    public void testBindingTriggerPriorToBindingEntityClass3() {
+        @Entity
+        @Include
+        class Foo4 {
+            @Id
+            private long id;
+
+            private int bar;
+        }
+
+        LifeCycleHook<Foo4> trigger = mock(LifeCycleHook.class);
+
+        this.bindTrigger(Foo4.class, OnUpdatePreSecurity.class, trigger);
+        Assert.assertEquals(this.getAllFields(Foo4.class).size(), 1);
+    }
+
+    @Test
+    public void testJPAFieldLevelAccess() {
+        @Entity
+        @Include
+        class FieldLevelTest {
+            @Id
+            private long id;
+
+            private int bar;
+
+            @Exclude
+            private int excluded;
+
+            @Transient
+            @ComputedAttribute
+            private int computedField;
+
+            @Transient
+            @ComputedAttribute
+            public int getComputedProperty() {
+                return 1;
+            }
+
+            public void setComputedProperty() {
+                //NOOP
+            }
+        }
+        this.bindEntity(FieldLevelTest.class);
+
+        Assert.assertEquals(getAccessType(FieldLevelTest.class), AccessType.FIELD);
+
+        List<String> fields = this.getAllFields(FieldLevelTest.class);
+        Assert.assertEquals(fields.size(), 3);
+        Assert.assertTrue(fields.contains("bar"));
+        Assert.assertTrue(fields.contains("computedField"));
+        Assert.assertTrue(fields.contains("computedProperty"));
+    }
+
+    @Test
+    public void testJPAPropertyLevelAccess() {
+        @Entity
+        @Include
+        class PropertyLevelTest {
+            private long id;
+
+            private int excluded;
+            public int bar;
+
+
+            @Exclude
+            public int getExcluded() {
+                return excluded;
+            }
+
+            public void setExcluded(int unused) {
+                //noop
+            }
+
+            @Transient
+            @ComputedAttribute
+            private int computedField;
+
+            @Transient
+            @ComputedAttribute
+            public int getComputedProperty() {
+                return 1;
+            }
+
+            public void setComputedProperty() {
+                //NOOP
+            }
+        }
+        this.bindEntity(PropertyLevelTest.class);
+
+        Assert.assertEquals(getAccessType(PropertyLevelTest.class), AccessType.PROPERTY);
+
+        List<String> fields = this.getAllFields(PropertyLevelTest.class);
+        Assert.assertEquals(fields.size(), 2);
+        Assert.assertTrue(fields.contains("bar"));
+        Assert.assertTrue(fields.contains("computedProperty"));
+    }
+
+
+    @Test
     public void testGetParameterizedType() {
         Class<?> type;
 
@@ -68,6 +256,15 @@ public class EntityDictionaryTest extends EntityDictionary {
 
         type = getParameterizedType(fun, "relation3");
         Assert.assertEquals(type, Child.class, "A Child object should return Child.class");
+
+        Assert.assertEquals(getParameterizedType(FieldAnnotations.class, "children"), FieldAnnotations.class,
+                "getParameterizedType return the type of a private field relationship");
+
+        Assert.assertEquals(getParameterizedType(Parent.class, "children"), Child.class,
+            "getParameterizedType returns the type of relationship fields");
+
+        Assert.assertEquals(getParameterizedType(Manager.class, "minions"), Employee.class,
+            "getParameterizedType returns the correct generic type of a to-many relationship");
     }
 
     @Test
@@ -86,6 +283,21 @@ public class EntityDictionaryTest extends EntityDictionary {
     public void testComputedAttributeIsExposed() {
         List<String> attributes = getAttributes(User.class);
         Assert.assertTrue(attributes.contains("password"));
+    }
+
+    @Test
+    public void testExcludedAttributeIsNotExposed() {
+        List<String> attributes = getAttributes(User.class);
+        Assert.assertFalse(attributes.contains("reversedPassword"));
+    }
+
+    @Test
+    public void testDetectCascadeRelations() {
+        Assert.assertFalse(cascadeDeletes(FunWithPermissions.class, "relation1"));
+        Assert.assertFalse(cascadeDeletes(FunWithPermissions.class, "relation2"));
+        Assert.assertTrue(cascadeDeletes(FunWithPermissions.class, "relation3"));
+        Assert.assertFalse(cascadeDeletes(FunWithPermissions.class, "relation4"));
+        Assert.assertFalse(cascadeDeletes(FunWithPermissions.class, "relation5"));
     }
 
     @Test
@@ -146,7 +358,7 @@ public class EntityDictionaryTest extends EntityDictionary {
         Assert.assertEquals(getIdType(StringId.class), String.class,
                 "getIdType returns the type of the ID field of the given class");
 
-        Assert.assertEquals(getIdType(NoId.class), null,
+        Assert.assertNull(getIdType(NoId.class),
                 "getIdType returns null if ID field is missing");
 
         Assert.assertEquals(getIdType(Friend.class), long.class,
@@ -155,7 +367,6 @@ public class EntityDictionaryTest extends EntityDictionary {
 
     @Test
     public void testGetType() throws Exception {
-
         Assert.assertEquals(getType(FieldAnnotations.class, "id"), Long.class,
             "getType returns the type of the ID field of the given class");
 
@@ -165,14 +376,27 @@ public class EntityDictionaryTest extends EntityDictionary {
         Assert.assertEquals(getType(FieldAnnotations.class, "privateField"), Boolean.class,
             "getType returns the type of attribute when Column annotation is on a getter");
 
-        Assert.assertEquals(getType(FieldAnnotations.class, "missingField"), null,
-            "getId returns null if attribute is missing");
+        Assert.assertNull(getType(FieldAnnotations.class, "missingField"),
+                "getId returns null if attribute is missing"
+        );
+
+        Assert.assertEquals(getType(FieldAnnotations.class, "parent"), FieldAnnotations.class,
+                "getType return the type of a private field relationship");
+
+        Assert.assertEquals(getType(FieldAnnotations.class, "children"), Set.class,
+                "getType return the type of a private field relationship");
 
         Assert.assertEquals(getType(Parent.class, "children"), Set.class,
             "getType returns the type of relationship fields");
 
         Assert.assertEquals(getType(Friend.class, "name"), String.class,
                 "getType returns the type of attribute when defined in a super class");
+
+        Assert.assertEquals(getType(Employee.class, "boss"), Manager.class,
+            "getType returns the correct generic type of a to-one relationship");
+
+        Assert.assertEquals(getType(Manager.class, "minions"), Set.class,
+            "getType returns the correct generic type of a to-many relationship");
     }
 
     @Test(expectedExceptions = IllegalArgumentException.class)
@@ -188,5 +412,20 @@ public class EntityDictionaryTest extends EntityDictionary {
             && !attrs.contains("excludedEntityList"));
         Assert.assertTrue(!rels.contains("excludedEntity") && !rels.contains("excludedRelationship")
             && !rels.contains("excludedEntityList"));
+    }
+
+    @MappedInterface
+    public interface SuitableInterface { }
+
+    public interface BadInterface { }
+
+    @Test
+    public void testMappedInterface() {
+        Assert.assertEquals(getEntityBinding(SuitableInterface.class), EntityBinding.EMPTY_BINDING);
+    }
+
+    @Test(expectedExceptions = java.lang.IllegalArgumentException.class)
+    public void testBadInterface() {
+        getEntityBinding(BadInterface.class);
     }
 }

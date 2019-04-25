@@ -5,8 +5,8 @@
  */
 package example;
 
-import com.yahoo.elide.security.RequestScope;
 import com.yahoo.elide.security.ChangeSpec;
+import com.yahoo.elide.security.RequestScope;
 import com.yahoo.elide.security.checks.OperationCheck;
 
 import java.util.Optional;
@@ -18,5 +18,10 @@ public class NegativeChildIdCheck extends OperationCheck<Child> {
     @Override
     public boolean ok(Child child, RequestScope requestScope, Optional<ChangeSpec> fChangeSpec) {
         return child.getId() >= 0;
+    }
+
+    @Override
+    public String checkIdentifier() {
+        return "negativeChildId";
     }
 }

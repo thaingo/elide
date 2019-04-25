@@ -1,22 +1,22 @@
 /*
- * Copyright 2015, Yahoo Inc.
+ * Copyright 2018, Oath Inc.
  * Licensed under the Apache License, Version 2.0
  * See LICENSE file in project root for terms.
  */
 package com.yahoo.elide.extensions;
 
-import com.yahoo.elide.Elide;
 import com.yahoo.elide.core.DataStore;
 import com.yahoo.elide.core.HttpStatus;
 import com.yahoo.elide.core.RequestScope;
-import com.yahoo.elide.core.exceptions.JsonPatchExtensionException;
 import com.yahoo.elide.core.exceptions.HttpStatusException;
 import com.yahoo.elide.core.exceptions.InvalidEntityBodyException;
+import com.yahoo.elide.core.exceptions.JsonPatchExtensionException;
 import com.yahoo.elide.jsonapi.models.Data;
 import com.yahoo.elide.jsonapi.models.JsonApiDocument;
 import com.yahoo.elide.jsonapi.models.Patch;
 import com.yahoo.elide.jsonapi.models.Resource;
 import com.yahoo.elide.parsers.DeleteVisitor;
+import com.yahoo.elide.parsers.JsonApiParser;
 import com.yahoo.elide.parsers.PatchVisitor;
 import com.yahoo.elide.parsers.PostVisitor;
 
@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.tuple.Pair;
 
@@ -61,8 +62,8 @@ public class JsonApiPatch {
                 try {
                     // Only update relationships
                     clearAllExceptRelationships(doc);
-                    PatchVisitor visitor = new PatchVisitor(new PatchRequestScope(doc, requestScope));
-                    visitor.visit(Elide.parse(path));
+                    PatchVisitor visitor = new PatchVisitor(new PatchRequestScope(path, doc, requestScope));
+                    visitor.visit(JsonApiParser.parse(path));
                 } catch (HttpStatusException e) {
                     cause = e;
                     throw e;
@@ -95,14 +96,17 @@ public class JsonApiPatch {
      * @param patchDoc the patch doc
      * @param requestScope request scope
      * @return pair
-     * @throws IOException the iO exception
      */
     public static Supplier<Pair<Integer, JsonNode>> processJsonPatch(DataStore dataStore,
             String uri,
             String patchDoc,
-            PatchRequestScope requestScope)
-            throws IOException {
-        List<Patch> actions = requestScope.getMapper().readJsonApiPatchExtDoc(patchDoc);
+            PatchRequestScope requestScope) {
+        List<Patch> actions;
+        try {
+            actions = requestScope.getMapper().readJsonApiPatchExtDoc(patchDoc);
+        } catch (IOException e) {
+            throw new InvalidEntityBodyException(patchDoc);
+        }
         JsonApiPatch processor = new JsonApiPatch(dataStore, actions, uri, requestScope);
         return processor.processActions(requestScope);
     }
@@ -133,20 +137,17 @@ public class JsonApiPatch {
 
             postProcessRelationships(requestScope);
 
-            // Avoid any lazy loading issues
-            results.forEach(Supplier::get);
-
             return () -> {
                 try {
                     return Pair.of(HttpStatus.SC_OK, mergeResponse(results));
                 } catch (HttpStatusException e) {
-                    throwErrorResponse(e, requestScope.getPermissionExecutor().isVerbose());
+                    throwErrorResponse();
                     // NOTE: This should never be called. throwErrorResponse should _always_ throw an exception
                     return null;
                 }
             };
         } catch (HttpStatusException e) {
-            throwErrorResponse(e, requestScope.getPermissionExecutor().isVerbose());
+            throwErrorResponse();
             // NOTE: This should never be called. throwErrorResponse should _always_ throw an exception
             return () -> null;
         }
@@ -208,8 +209,8 @@ public class JsonApiPatch {
                 action.path = fullPath;
                 action.isPostProcessing = true;
             }
-            PostVisitor visitor = new PostVisitor(new PatchRequestScope(value, requestScope));
-            return visitor.visit(Elide.parse(path));
+            PostVisitor visitor = new PostVisitor(new PatchRequestScope(path, value, requestScope));
+            return visitor.visit(JsonApiParser.parse(path));
         } catch (HttpStatusException e) {
             action.cause = e;
             throw e;
@@ -226,8 +227,8 @@ public class JsonApiPatch {
         try {
             JsonApiDocument value = requestScope.getMapper().readJsonApiPatchExtValue(patchVal);
             // Defer relationship updating until the end
-            PatchVisitor visitor = new PatchVisitor(new PatchRequestScope(value, requestScope));
-            return visitor.visit(Elide.parse(path));
+            PatchVisitor visitor = new PatchVisitor(new PatchRequestScope(path, value, requestScope));
+            return visitor.visit(JsonApiParser.parse(path));
         } catch (IOException e) {
             throw new InvalidEntityBodyException("Could not parse patch extension value: " + patchVal);
         }
@@ -255,8 +256,8 @@ public class JsonApiPatch {
                 }
             }
             DeleteVisitor visitor = new DeleteVisitor(
-                new PatchRequestScope(value, requestScope));
-            return visitor.visit(Elide.parse(fullPath));
+                new PatchRequestScope(path, value, requestScope));
+            return visitor.visit(JsonApiParser.parse(fullPath));
         } catch (IOException e) {
             throw new InvalidEntityBodyException("Could not parse patch extension value: " + patchValue);
         }
@@ -279,11 +280,7 @@ public class JsonApiPatch {
     /**
      * Turn an exception into a proper error response from patch extension.
      */
-    private void throwErrorResponse(HttpStatusException e, boolean isVerbose) {
-        if (e.getStatus() == HttpStatus.SC_FORBIDDEN) {
-            throw new JsonPatchExtensionException(isVerbose ? e.getVerboseErrorResponse() : e.getErrorResponse());
-        }
-
+    private void throwErrorResponse() {
         ObjectNode errorContainer = getErrorContainer();
         ArrayNode errorList = (ArrayNode) errorContainer.get("errors");
 
@@ -291,7 +288,18 @@ public class JsonApiPatch {
         for (PatchAction action : actions) {
             failed = processAction(errorList, failed, action);
         }
-        throw new JsonPatchExtensionException(HttpStatus.SC_BAD_REQUEST, errorContainer);
+
+        JsonPatchExtensionException failure =
+                new JsonPatchExtensionException(HttpStatus.SC_BAD_REQUEST, errorContainer);
+
+        // attach error causes to exception
+        for (PatchAction action : actions) {
+            if (action.cause != null) {
+                failure.addSuppressed(action.cause);
+            }
+        }
+
+        throw failure;
     }
 
     private ObjectNode getErrorContainer() {

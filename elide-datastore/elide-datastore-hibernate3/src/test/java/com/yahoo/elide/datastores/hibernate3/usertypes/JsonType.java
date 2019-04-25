@@ -8,6 +8,7 @@ package com.yahoo.elide.datastores.hibernate3.usertypes;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.hibernate.HibernateException;
 import org.hibernate.usertype.ParameterizedType;
 import org.hibernate.usertype.UserType;
@@ -26,6 +27,7 @@ import java.util.Properties;
  */
 
 public class JsonType implements UserType, ParameterizedType {
+    private final static ObjectMapper MAPPER = new ObjectMapper();
 
     private Class<?> objectClass;
 
@@ -78,8 +80,7 @@ public class JsonType implements UserType, ParameterizedType {
             String rawJson = resultSet.getString(names[0]);
 
             try {
-                ObjectMapper mapper = new ObjectMapper();
-                return mapper.readValue(rawJson, this.objectClass);
+                return MAPPER.readValue(rawJson, this.objectClass);
             } catch (IOException e) {
                 throw new HibernateException("Could not retrieve an instance of the mapped class from a JDBC resultset.");
             }
@@ -91,16 +92,15 @@ public class JsonType implements UserType, ParameterizedType {
      * {@inheritDoc}
      */
     @Override
-    public void nullSafeSet(PreparedStatement preparedStatement, Object value, int index)
-            throws HibernateException, SQLException  {
+    public void nullSafeSet(PreparedStatement preparedStatement, Object value, int i)
+            throws HibernateException, SQLException {
 
         if (value == null) {
-            preparedStatement.setNull(index, Types.NULL);
+            preparedStatement.setNull(i, Types.NULL);
         } else {
-            ObjectMapper mapper = new ObjectMapper();
             try {
-                String json = mapper.writeValueAsString(value);
-                preparedStatement.setString(index, json);
+                String json = MAPPER.writeValueAsString(value);
+                preparedStatement.setString(i, json);
             } catch (JsonProcessingException e) {
                 throw new HibernateException("Could not write an instance of the mapped class to a prepared statement.");
             }
@@ -167,6 +167,5 @@ public class JsonType implements UserType, ParameterizedType {
         } catch (ClassNotFoundException e) {
             throw new RuntimeException("Unable set the `class` parameter for serialization/deserialization");
         }
-
     }
 }

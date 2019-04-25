@@ -14,7 +14,7 @@
     <parent>
         <groupId>com.yahoo.elide</groupId>
         <artifactId>elide-datastore-parent-pom</artifactId>
-        <version>2.3.4-SNAPSHOT</version>
+        <version>4.4.2-SNAPSHOT</version>
     </parent>
 
     <licenses>
@@ -51,19 +51,19 @@
         <dependency>
             <groupId>com.yahoo.elide</groupId>
             <artifactId>elide-datastore-hibernate</artifactId>
-            <version>2.3.4-SNAPSHOT</version>
+            <version>4.4.2-SNAPSHOT</version>
         </dependency>
         <dependency>
             <groupId>com.yahoo.elide</groupId>
             <artifactId>elide-datastore-hibernate</artifactId>
-            <version>2.3.4-SNAPSHOT</version>
+            <version>4.4.2-SNAPSHOT</version>
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.yahoo.elide</groupId>
             <artifactId>elide-integration-tests</artifactId>
-            <version>2.3.4-SNAPSHOT</version>
+            <version>4.4.2-SNAPSHOT</version>
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
@@ -77,7 +77,7 @@
         <dependency>
             <groupId>org.hibernate</groupId>
             <artifactId>hibernate-core</artifactId>
-            <version>3.6.6.Final</version>
+            <version>${hibernate3.version}</version>
             <exclusions>
                 <exclusion>
                     <artifactId>xml-apis</artifactId>
@@ -101,7 +101,7 @@
         <dependency>
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-hibernate3</artifactId>
-            <version>2.6.3</version>
+            <version>${version.jackson}</version>
         </dependency>
 
         <!-- Integration test -->
@@ -126,13 +126,21 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>mysql</groupId>
-            <artifactId>mysql-connector-java</artifactId>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-webapp</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Envers testing -->
+        <dependency>
+            <groupId>org.hibernate</groupId>
+            <artifactId>hibernate-envers</artifactId>
+            <version>${hibernate3.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -148,12 +156,12 @@
                 <artifactId>maven-dependency-plugin</artifactId>
             </plugin>
             <plugin>
-                <groupId>com.jcabi</groupId>
-                <artifactId>jcabi-mysql-maven-plugin</artifactId>
-            </plugin>
-            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <forkMode>once</forkMode>
+                    <failIfNoTests>true</failIfNoTests>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

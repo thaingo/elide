@@ -7,15 +7,15 @@ package example;
 
 import com.yahoo.elide.annotation.Include;
 import com.yahoo.elide.annotation.SharePermission;
-import com.yahoo.elide.security.checks.prefab.Role;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.Table;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 /**
  * Bean with Map of Enums.
@@ -23,7 +23,7 @@ import java.util.Map;
 @Entity
 @Table(name = "color_shape")
 @Include(rootLevel = true)
-@SharePermission(any = {Role.ALL.class})
+@SharePermission
 public class MapColorShape {
     private long id;
     private String name;

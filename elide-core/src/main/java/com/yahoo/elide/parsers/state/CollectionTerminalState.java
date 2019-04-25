@@ -5,10 +5,6 @@
  */
 package com.yahoo.elide.parsers.state;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Preconditions;
 import com.yahoo.elide.core.HttpStatus;
 import com.yahoo.elide.core.PersistentResource;
 import com.yahoo.elide.core.RequestScope;
@@ -16,19 +12,31 @@ import com.yahoo.elide.core.exceptions.ForbiddenAccessException;
 import com.yahoo.elide.core.exceptions.InternalServerErrorException;
 import com.yahoo.elide.core.exceptions.InvalidEntityBodyException;
 import com.yahoo.elide.core.exceptions.InvalidObjectIdentifierException;
+import com.yahoo.elide.core.exceptions.InvalidValueException;
+import com.yahoo.elide.core.exceptions.UnknownEntityException;
+import com.yahoo.elide.core.filter.expression.FilterExpression;
+import com.yahoo.elide.core.pagination.Pagination;
+import com.yahoo.elide.core.sort.Sorting;
 import com.yahoo.elide.jsonapi.JsonApiMapper;
 import com.yahoo.elide.jsonapi.document.processors.DocumentProcessor;
 import com.yahoo.elide.jsonapi.document.processors.IncludedProcessor;
 import com.yahoo.elide.jsonapi.models.Data;
 import com.yahoo.elide.jsonapi.models.JsonApiDocument;
+import com.yahoo.elide.jsonapi.models.Meta;
 import com.yahoo.elide.jsonapi.models.Relationship;
 import com.yahoo.elide.jsonapi.models.Resource;
-import com.yahoo.elide.security.User;
-import lombok.ToString;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.google.common.base.Preconditions;
+
 import org.apache.commons.lang3.tuple.Pair;
 
+import lombok.ToString;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -59,17 +67,41 @@ public class CollectionTerminalState extends BaseState {
     public Supplier<Pair<Integer, JsonNode>> handleGet(StateContext state) {
         JsonApiDocument jsonApiDocument = new JsonApiDocument();
         RequestScope requestScope = state.getRequestScope();
-        ObjectMapper mapper = requestScope.getMapper().getObjectMapper();
         Optional<MultivaluedMap<String, String>> queryParams = requestScope.getQueryParams();
 
         Set<PersistentResource> collection = getResourceCollection(requestScope);
         // Set data
-        jsonApiDocument.setData(getData(requestScope, collection));
+        jsonApiDocument.setData(getData(collection));
 
         // Run include processor
         DocumentProcessor includedProcessor = new IncludedProcessor();
         includedProcessor.execute(jsonApiDocument, collection, queryParams);
-        JsonNode responseBody = mapper.convertValue(jsonApiDocument, JsonNode.class);
+
+        // Add pagination meta data
+        Pagination pagination = requestScope.getPagination();
+        if (!pagination.isEmpty()) {
+
+            Map<String, Number> pageMetaData = new HashMap<>();
+            pageMetaData.put("number", (pagination.getOffset() / pagination.getLimit()) + 1);
+            pageMetaData.put("limit", pagination.getLimit());
+
+            // Get total records if it has been requested and add to the page meta data
+            if (pagination.isGenerateTotals()) {
+                Long totalRecords = pagination.getPageTotals();
+                pageMetaData.put("totalPages", totalRecords / pagination.getLimit()
+                        + ((totalRecords % pagination.getLimit()) > 0 ? 1 : 0));
+                pageMetaData.put("totalRecords", totalRecords);
+            }
+
+            Map<String, Object> allMetaData = new HashMap<>();
+            allMetaData.put("page", pageMetaData);
+
+            Meta meta = new Meta(allMetaData);
+            jsonApiDocument.setMeta(meta);
+        }
+
+        JsonNode responseBody = requestScope.getMapper().toJsonObject(jsonApiDocument);
+
         return () -> Pair.of(HttpStatus.SC_OK, responseBody);
     }
 
@@ -79,10 +111,7 @@ public class CollectionTerminalState extends BaseState {
         JsonApiMapper mapper = requestScope.getMapper();
 
         newObject = createObject(requestScope);
-        if (parent.isPresent()) {
-            parent.get().addRelation(relationName.get(), newObject);
-        }
-        requestScope.getTransaction().save(newObject.getObject());
+        parent.ifPresent(persistentResource -> persistentResource.addRelation(relationName.get(), newObject));
         return () -> {
             JsonApiDocument returnDoc = new JsonApiDocument();
             returnDoc.setData(new Data(newObject.toResource()));
@@ -93,32 +122,39 @@ public class CollectionTerminalState extends BaseState {
 
     private Set<PersistentResource> getResourceCollection(RequestScope requestScope) {
         final Set<PersistentResource> collection;
-        final boolean hasSortingOrPagination = !requestScope.getPagination().isDefaultInstance()
-                || !requestScope.getSorting().isDefaultInstance();
+        // TODO: In case of join filters, apply pagination after getting records
+        // instead of passing it to the datastore
+
+        Optional<Pagination> pagination = Optional.ofNullable(requestScope.getPagination());
+        Optional<Sorting> sorting = Optional.ofNullable(requestScope.getSorting());
+
         if (parent.isPresent()) {
-            if (hasSortingOrPagination) {
-                collection = parent.get().getRelationCheckedFilteredWithSortingAndPagination(relationName.get());
-            } else {
-                collection = parent.get().getRelationCheckedFiltered(relationName.get());
-            }
+            Optional<FilterExpression> filterExpression =
+                    requestScope.getExpressionForRelation(parent.get(), relationName.get());
+
+            collection = parent.get().getRelationCheckedFiltered(
+                    relationName.get(),
+                    filterExpression,
+                    sorting,
+                    pagination);
         } else {
-            if (hasSortingOrPagination) {
-                collection = (Set) PersistentResource.loadRecordsWithSortingAndPagination(entityClass, requestScope);
-            } else {
-                collection = (Set) PersistentResource.loadRecords(entityClass, requestScope);
-            }
+            Optional<FilterExpression> filterExpression = requestScope.getLoadFilterExpression(entityClass);
+
+            collection = PersistentResource.loadRecords(
+                entityClass,
+                new ArrayList<>(), //Empty list of IDs
+                filterExpression,
+                sorting,
+                pagination,
+                requestScope);
         }
 
         return collection;
     }
 
-    private Data getData(RequestScope requestScope, Set<PersistentResource> collection) {
-        User user = requestScope.getUser();
+    private Data getData(Set<PersistentResource> collection) {
         Preconditions.checkNotNull(collection);
-        Preconditions.checkNotNull(user);
-
         List<Resource> resources = collection.stream().map(PersistentResource::toResource).collect(Collectors.toList());
-
         return new Data<>(resources);
     }
 
@@ -140,21 +176,25 @@ public class CollectionTerminalState extends BaseState {
         }
 
         String id = resource.getId();
-        PersistentResource pResource;
-        if (parent.isPresent()) {
-            pResource = PersistentResource.createObject(parent.get(), entityClass, requestScope, id);
-        } else {
-            pResource = PersistentResource.createObject(entityClass, requestScope, id);
+        Class<?> newObjectClass = requestScope.getDictionary().getEntityClass(resource.getType());
+
+        if (newObjectClass == null) {
+            throw new UnknownEntityException("Entity " + resource.getType() + " not found");
+        }
+        if (!entityClass.isAssignableFrom(newObjectClass)) {
+            throw new InvalidValueException("Cannot assign value of type: " + resource.getType()
+                    + " to type: " + entityClass);
         }
 
-        assignId(pResource, id);
+        PersistentResource pResource = PersistentResource.createObject(
+                parent.orElse(null), newObjectClass, requestScope, Optional.ofNullable(id));
 
         Map<String, Object> attributes = resource.getAttributes();
         if (attributes != null) {
             for (Map.Entry<String, Object> entry : attributes.entrySet()) {
-                String key = entry.getKey();
+                String fieldName = entry.getKey();
                 Object val = entry.getValue();
-                pResource.updateAttribute(key, val);
+                pResource.updateAttribute(fieldName, val);
             }
         }
 
@@ -171,24 +211,5 @@ public class CollectionTerminalState extends BaseState {
         }
 
         return pResource;
-    }
-
-    /**
-     * Assign provided id if id field is not generated.
-     *
-     * @param persistentResource resource
-     * @param id resource id
-     */
-    private void assignId(PersistentResource persistentResource, String id) {
-
-        //If id field is not a `@GeneratedValue` persist the provided id
-        if (!persistentResource.isIdGenerated()) {
-            if (id != null && !id.isEmpty()) {
-                persistentResource.setId(id);
-            } else {
-                //If expecting id to persist and id is not present, throw exception
-                throw new ForbiddenAccessException("No id provided, cannot persist " + persistentResource.getObject());
-            }
-        }
     }
 }

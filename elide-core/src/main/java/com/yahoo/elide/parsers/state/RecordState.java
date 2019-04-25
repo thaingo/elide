@@ -7,13 +7,15 @@ package com.yahoo.elide.parsers.state;
 
 import com.yahoo.elide.core.EntityDictionary;
 import com.yahoo.elide.core.PersistentResource;
+import com.yahoo.elide.core.RelationshipType;
 import com.yahoo.elide.core.exceptions.InvalidAttributeException;
 import com.yahoo.elide.core.exceptions.InvalidCollectionException;
-import com.yahoo.elide.jsonapi.models.SingleElementSet;
+import com.yahoo.elide.core.filter.expression.FilterExpression;
 import com.yahoo.elide.generated.parsers.CoreParser.SubCollectionReadCollectionContext;
 import com.yahoo.elide.generated.parsers.CoreParser.SubCollectionReadEntityContext;
 import com.yahoo.elide.generated.parsers.CoreParser.SubCollectionRelationshipContext;
 import com.yahoo.elide.generated.parsers.CoreParser.SubCollectionSubCollectionContext;
+import com.yahoo.elide.jsonapi.models.SingleElementSet;
 
 import com.google.common.base.Preconditions;
 
@@ -35,17 +37,35 @@ public class RecordState extends BaseState {
     public void handle(StateContext state, SubCollectionReadCollectionContext ctx) {
         String subCollection = ctx.term().getText();
         EntityDictionary dictionary = state.getRequestScope().getDictionary();
+        Class<?> entityClass;
+        String entityName;
         try {
-            Set<PersistentResource> collection = resource.getRelationCheckedFiltered(subCollection); // Check if exists.
-            String entityName =
-                    dictionary.getJsonAliasFor(dictionary.getParameterizedType(resource.getObject(), subCollection));
-            Class<?> entityClass = dictionary.getEntityClass(entityName);
+            RelationshipType type = dictionary.getRelationshipType(resource.getObject(), subCollection);
+            if (type == RelationshipType.NONE) {
+                throw new InvalidCollectionException(subCollection);
+            }
+            Class<?> paramType = dictionary.getParameterizedType(resource.getObject(), subCollection);
+            if (dictionary.isMappedInterface(paramType)) {
+                entityName = EntityDictionary.getSimpleName(paramType);
+                entityClass = paramType;
+            } else {
+                entityName = dictionary.getJsonAliasFor(paramType);
+                entityClass = dictionary.getEntityClass(entityName);
+
+            }
             if (entityClass == null) {
                 throw new IllegalArgumentException("Unknown type " + entityName);
             }
             final BaseState nextState;
             final CollectionTerminalState collectionTerminalState =
                     new CollectionTerminalState(entityClass, Optional.of(resource), Optional.of(subCollection));
+            Set<PersistentResource> collection = null;
+            if (type.isToOne()) {
+                Optional<FilterExpression> filterExpression =
+                        state.getRequestScope().getExpressionForRelation(resource, subCollection);
+                collection = resource.getRelationCheckedFiltered(subCollection,
+                        filterExpression, Optional.empty(), Optional.empty());
+            }
             if (collection instanceof SingleElementSet) {
                 PersistentResource record = ((SingleElementSet<PersistentResource>) collection).getValue();
                 nextState = new RecordTerminalState(record, collectionTerminalState);
@@ -96,7 +116,9 @@ public class RecordState extends BaseState {
 
         String relationName = ctx.relationship().term().getText();
         try {
-            childRecord.getRelationCheckedFiltered(relationName);
+            Optional<FilterExpression> filterExpression =
+                        state.getRequestScope().getExpressionForRelation(resource, subCollection);
+            childRecord.getRelationCheckedFiltered(relationName, filterExpression, Optional.empty(), Optional.empty());
         } catch (InvalidAttributeException e) {
             throw new InvalidCollectionException(relationName);
         }

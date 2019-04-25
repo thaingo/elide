@@ -9,6 +9,8 @@ import com.yahoo.elide.core.EntityDictionary;
 import com.yahoo.elide.core.PersistentResource;
 import com.yahoo.elide.core.exceptions.InvalidAttributeException;
 import com.yahoo.elide.core.exceptions.InvalidCollectionException;
+import com.yahoo.elide.core.filter.expression.FilterExpression;
+import com.yahoo.elide.generated.parsers.CoreParser.EntityContext;
 import com.yahoo.elide.generated.parsers.CoreParser.RootCollectionLoadEntitiesContext;
 import com.yahoo.elide.generated.parsers.CoreParser.RootCollectionLoadEntityContext;
 import com.yahoo.elide.generated.parsers.CoreParser.RootCollectionRelationshipContext;
@@ -33,48 +35,25 @@ public class StartState extends BaseState {
 
     @Override
     public void handle(StateContext state, RootCollectionLoadEntityContext ctx) {
-        EntityDictionary dictionary = state.getRequestScope().getDictionary();
-        String entityName = ctx.entity().term().getText();
-        String id = ctx.entity().id().getText();
-        Class<?> entityClass = dictionary.getEntityClass(entityName);
-        if (entityClass == null || !dictionary.isRoot(entityClass)) {
-            throw new InvalidCollectionException(entityName);
-        }
-
-        PersistentResource record = PersistentResource.loadRecord(entityClass, id, state.getRequestScope());
+        PersistentResource record = entityRecord(state, ctx.entity());
         state.setState(new RecordTerminalState(record));
     }
 
     @Override
     public void handle(StateContext state, RootCollectionSubCollectionContext ctx) {
-        EntityDictionary dictionary = state.getRequestScope().getDictionary();
-        String entityName = ctx.entity().term().getText();
-        String id = ctx.entity().id().getText();
-
-        Class<?> entityClass = dictionary.getEntityClass(entityName);
-        if (entityClass == null || !dictionary.isRoot(entityClass)) {
-            throw new InvalidCollectionException(entityName);
-        }
-
-        PersistentResource record = PersistentResource.loadRecord(entityClass, id, state.getRequestScope());
+        PersistentResource record = entityRecord(state, ctx.entity());
         state.setState(new RecordState(record));
     }
 
     @Override
     public void handle(StateContext state, RootCollectionRelationshipContext ctx) {
-        EntityDictionary dictionary = state.getRequestScope().getDictionary();
-        String entityName = ctx.entity().term().getText();
-        String id = ctx.entity().id().getText();
-        Class<?> entityClass = dictionary.getEntityClass(entityName);
-        if (entityClass == null || !dictionary.isRoot(entityClass)) {
-            throw new InvalidCollectionException(entityName);
-        }
-
-        PersistentResource record = PersistentResource.loadRecord(entityClass, id, state.getRequestScope());
+        PersistentResource record = entityRecord(state, ctx.entity());
 
         String relationName = ctx.relationship().term().getText();
         try {
-            record.getRelationCheckedFiltered(relationName);
+            Optional<FilterExpression> filterExpression =
+                    state.getRequestScope().getExpressionForRelation(record, relationName);
+            record.getRelationCheckedFiltered(relationName, filterExpression, Optional.empty(), Optional.empty());
         } catch (InvalidAttributeException e) {
             throw new InvalidCollectionException(relationName);
         }
@@ -85,5 +64,17 @@ public class StartState extends BaseState {
     @Override
     public String toString() {
         return this.getClass().getName();
+    }
+
+    private PersistentResource<?> entityRecord(StateContext state, EntityContext entity) {
+        String entityName = entity.term().getText();
+        String id = entity.id().getText();
+        EntityDictionary dictionary = state.getRequestScope().getDictionary();
+        Class<?> entityClass = dictionary.getEntityClass(entityName);
+        if (entityClass == null || !dictionary.isRoot(entityClass)) {
+            throw new InvalidCollectionException(entityName);
+        }
+
+        return PersistentResource.loadRecord(entityClass, id, state.getRequestScope());
     }
 }

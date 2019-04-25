@@ -7,9 +7,12 @@ package com.yahoo.elide.datastores.multiplex;
 
 import com.yahoo.elide.core.DataStore;
 import com.yahoo.elide.core.DataStoreTransaction;
+import com.yahoo.elide.core.RequestScope;
+import com.yahoo.elide.core.exceptions.HttpStatusException;
 import com.yahoo.elide.core.exceptions.TransactionException;
-
-import com.google.common.collect.Lists;
+import com.yahoo.elide.core.filter.expression.FilterExpression;
+import com.yahoo.elide.core.pagination.Pagination;
+import com.yahoo.elide.core.sort.Sorting;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -20,7 +23,9 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map.Entry;
+import java.util.Optional;
 
+import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.MultivaluedHashMap;
 
 /**
@@ -42,34 +47,36 @@ public class MultiplexWriteTransaction extends MultiplexTransaction {
     }
 
     @Override
-    public void save(Object entity) {
-        getTransaction(entity).save(entity);
+    public void save(Object entity, RequestScope requestScope) {
+        getTransaction(entity).save(entity, requestScope);
         dirtyObjects.add(this.multiplexManager.getSubManager(entity.getClass()), entity);
     }
 
     @Override
-    public void delete(Object entity) {
-        getTransaction(entity).delete(entity);
+    public void delete(Object entity, RequestScope requestScope) {
+        getTransaction(entity).delete(entity, requestScope);
         dirtyObjects.add(this.multiplexManager.getSubManager(entity.getClass()), entity);
     }
 
     @Override
-    public void commit() {
+    public void commit(RequestScope scope) {
         // flush all before commits
-        flush();
+        flush(scope);
 
         ArrayList<DataStore> commitList = new ArrayList<>();
         for (Entry<DataStore, DataStoreTransaction> entry : transactions.entrySet()) {
             try {
-                entry.getValue().commit();
+                entry.getValue().commit(scope);
                 commitList.add(entry.getKey());
+            } catch (HttpStatusException | WebApplicationException e) {
+                reverseTransactions(commitList, e, scope);
+                throw e;
             } catch (Error | RuntimeException e) {
                 TransactionException transactionException = new TransactionException(e);
-                reverseTransactions(commitList, transactionException);
+                reverseTransactions(commitList, transactionException, scope);
                 throw transactionException;
             }
         }
-        transactions.clear();
     }
 
     /**
@@ -77,19 +84,19 @@ public class MultiplexWriteTransaction extends MultiplexTransaction {
      * @param restoreList List of database managers to reverse the last commit
      * @param cause cause to add any suppressed exceptions
      */
-    private void reverseTransactions(ArrayList<DataStore> restoreList, Throwable cause) {
+    private void reverseTransactions(ArrayList<DataStore> restoreList, Throwable cause, RequestScope requestScope) {
         for (DataStore dataStore : restoreList) {
-            try (DataStoreTransaction tx = dataStore.beginTransaction()) {
+            try (DataStoreTransaction transaction = dataStore.beginTransaction()) {
                 List<Object> list = dirtyObjects.get(dataStore);
                 for (Object dirtyObject : list == null ? Collections.emptyList() : list) {
                     Object cloned = clonedObjects.get(dirtyObject);
                     if (cloned == NEWLY_CREATED_OBJECT) {
-                        tx.delete(dirtyObject);
+                        transaction.delete(dirtyObject, requestScope);
                     } else {
-                        tx.save(cloned);
+                        transaction.save(cloned, requestScope);
                     }
                 }
-                tx.commit();
+                transaction.commit(requestScope);
             } catch (RuntimeException | IOException e) {
                 cause.addSuppressed(e);
             }
@@ -98,18 +105,17 @@ public class MultiplexWriteTransaction extends MultiplexTransaction {
 
     @SuppressWarnings("resource")
     @Override
-    public <T> T createObject(Class<T> createObject) {
-        DataStoreTransaction transaction = getTransaction(createObject);
-        T object = transaction.createObject(createObject);
+    public void createObject(Object entity, RequestScope scope) {
+        DataStoreTransaction transaction = getTransaction(entity.getClass());
+        transaction.createObject(entity, scope);
         // mark this object as newly created to be deleted on reverse transaction
-        clonedObjects.put(object, NEWLY_CREATED_OBJECT);
-        return object;
-
+        clonedObjects.put(entity, NEWLY_CREATED_OBJECT);
     }
 
     private <T> Iterable<T> hold(DataStoreTransaction transaction, Iterable<T> list) {
         if (transaction != lastDataStoreTransaction) {
-            ArrayList<T> newList = Lists.newArrayList(list);
+            ArrayList<T> newList = new ArrayList<>();
+            list.forEach(newList::add);
             for (T object : newList) {
                 hold(transaction, object);
             }
@@ -135,6 +141,10 @@ public class MultiplexWriteTransaction extends MultiplexTransaction {
      *  Clone contents of object for possible reverse transaction.
      */
     private Object cloneObject(Object object) {
+        if (object == null) {
+            return null;
+        }
+
         Class<?> cls = multiplexManager.getDictionary().lookupEntityClass(object.getClass());
         try {
             Object clone = cls.newInstance();
@@ -160,14 +170,41 @@ public class MultiplexWriteTransaction extends MultiplexTransaction {
     }
 
     @Override
-    public <T> T loadObject(Class<T> loadClass, Serializable id) {
-        DataStoreTransaction transaction = getTransaction(loadClass);
-        return hold(transaction, transaction.loadObject(loadClass, id));
+    public Object loadObject(Class<?> entityClass,
+                             Serializable id,
+                             Optional<FilterExpression> filterExpression,
+                             RequestScope scope) {
+        DataStoreTransaction transaction = getTransaction(entityClass);
+        return hold(transaction, transaction.loadObject(entityClass, id, filterExpression, scope));
     }
 
     @Override
-    public <T> Iterable<T> loadObjects(Class<T> loadClass) {
-        DataStoreTransaction transaction = getTransaction(loadClass);
-        return hold(transaction, transaction.loadObjects(loadClass));
+    public Iterable<Object> loadObjects(
+            Class<?> entityClass,
+            Optional<FilterExpression> filterExpression,
+            Optional<Sorting> sorting,
+            Optional<Pagination> pagination,
+            RequestScope scope) {
+        DataStoreTransaction transaction = getTransaction(entityClass);
+        return hold(transaction, transaction.loadObjects(entityClass, filterExpression, sorting, pagination, scope));
+    }
+
+    @Override
+    public Object getRelation(DataStoreTransaction relationTx,
+                              Object entity,
+                              String relationName,
+                              Optional<FilterExpression> filter,
+                              Optional<Sorting> sorting,
+                              Optional<Pagination> pagination,
+                              RequestScope scope) {
+        DataStoreTransaction transaction = getTransaction(entity.getClass());
+        Object relation = super.getRelation(relationTx, entity, relationName,
+                filter, sorting, pagination, scope);
+
+        if (relation instanceof Iterable) {
+            return hold(transaction, (Iterable) relation);
+        }
+
+        return hold(transaction, relation);
     }
 }

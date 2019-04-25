@@ -5,7 +5,6 @@
  */
 package example;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.yahoo.elide.annotation.Audit;
 import com.yahoo.elide.annotation.CreatePermission;
 import com.yahoo.elide.annotation.Include;
@@ -15,8 +14,11 @@ import com.yahoo.elide.security.ChangeSpec;
 import com.yahoo.elide.security.RequestScope;
 import com.yahoo.elide.security.checks.CommitCheck;
 import com.yahoo.elide.security.checks.OperationCheck;
-import com.yahoo.elide.security.checks.prefab.Role;
-import example.Child.InitCheck;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
+import java.util.Optional;
+import java.util.Set;
 
 import javax.persistence.CascadeType;
 import javax.persistence.Column;
@@ -26,14 +28,12 @@ import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.ManyToMany;
 import javax.persistence.OneToOne;
-import java.util.Optional;
-import java.util.Set;
 
-@Entity
-@CreatePermission(any = { InitCheck.class })
-@SharePermission(any = {Role.ALL.class})
-@ReadPermission(all = {NegativeChildIdCheck.class, NegativeIntegerUserCheck.class, Child.InitCheckOp.class})
-@Include
+@Entity(name = "childEntity")
+@CreatePermission(expression = "initCheck")
+@SharePermission
+@ReadPermission(expression = "negativeChildId AND negativeIntegerUser AND initCheckOp")
+@Include(rootLevel = true, type = "child")
 @Audit(action = Audit.Action.DELETE,
        operation = 0,
        logStatement = "DELETE Child {0} Parent {1}",
@@ -105,7 +105,7 @@ public class Child {
     @OneToOne(
             targetEntity = Child.class
     )
-    @ReadPermission(all = {Role.NONE.class})
+    @ReadPermission(expression = "deny all")
     public Child getReadNoAccess() {
         return noReadAccess;
     }
@@ -122,6 +122,11 @@ public class Child {
             }
             return false;
         }
+
+        @Override
+        public String checkIdentifier() {
+            return "initCheck";
+        }
     }
 
     static public class InitCheckOp extends OperationCheck<Child> {
@@ -131,6 +136,11 @@ public class Child {
                 return true;
             }
             return false;
+        }
+
+        @Override
+        public String checkIdentifier() {
+            return "initCheckOp";
         }
     }
 }

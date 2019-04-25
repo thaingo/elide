@@ -5,12 +5,30 @@
  */
 package com.yahoo.elide.tests;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.google.common.collect.Sets;
+import static com.jayway.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.isEmptyOrNullString;
+import static org.hamcrest.Matchers.startsWith;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertTrue;
+
 import com.yahoo.elide.Elide;
 import com.yahoo.elide.ElideResponse;
+import com.yahoo.elide.ElideSettingsBuilder;
 import com.yahoo.elide.audit.TestAuditLogger;
 import com.yahoo.elide.core.DataStoreTransaction;
+import com.yahoo.elide.core.EntityDictionary;
+import com.yahoo.elide.core.Path;
+import com.yahoo.elide.core.RequestScope;
+import com.yahoo.elide.core.filter.FilterPredicate;
+import com.yahoo.elide.core.filter.InfixPredicate;
+import com.yahoo.elide.core.filter.PostfixPredicate;
+import com.yahoo.elide.core.filter.PrefixPredicate;
+import com.yahoo.elide.core.pagination.Pagination;
 import com.yahoo.elide.initialization.AbstractIntegrationTestInitializer;
 import com.yahoo.elide.jsonapi.models.Data;
 import com.yahoo.elide.jsonapi.models.JsonApiDocument;
@@ -18,29 +36,36 @@ import com.yahoo.elide.jsonapi.models.Resource;
 import com.yahoo.elide.jsonapi.models.ResourceIdentifier;
 import com.yahoo.elide.security.executors.BypassPermissionExecutor;
 import com.yahoo.elide.utils.JsonParser;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.google.common.collect.Sets;
+
+import example.Book;
 import example.Child;
+import example.ExceptionThrowingBean;
 import example.FunWithPermissions;
+import example.Invoice;
+import example.LineItem;
 import example.Parent;
+import example.TestCheckMappings;
 import example.User;
+
 import org.apache.http.HttpStatus;
-import org.testng.Assert;
-import org.testng.annotations.BeforeTest;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
-import javax.ws.rs.core.MultivaluedHashMap;
-import javax.ws.rs.core.Response.Status;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Optional;
 import java.util.Set;
 
-import static com.jayway.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.isEmptyOrNullString;
-import static org.hamcrest.Matchers.startsWith;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import javax.ws.rs.core.HttpHeaders;
+import javax.ws.rs.core.MultivaluedHashMap;
+import javax.ws.rs.core.Response.Status;
 
 /**
  * The type Config resource test.
@@ -51,17 +76,18 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             "application/vnd.api+json; ext=jsonpatch";
     private final JsonParser jsonParser = new JsonParser();
 
-    @BeforeTest
-    public static void setup() {
+    @BeforeClass
+    public static void setup() throws IOException {
         DataStoreTransaction tx = dataStore.beginTransaction();
+
         Parent parent = new Parent(); // id 1
         Child child = new Child(); // id 1
         parent.setChildren(Sets.newHashSet(child));
         parent.setSpouses(Sets.newHashSet());
         child.setParents(Sets.newHashSet(parent));
 
-        tx.save(parent);
-        tx.save(child);
+        tx.createObject(parent, null);
+        tx.createObject(child, null);
 
         // Single tests
         Parent p1 = new Parent(); // id 2
@@ -86,10 +112,6 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
 
         p1.setChildren(childrenSet1);
 
-        tx.save(p1);
-        tx.save(c1);
-        tx.save(c2);
-
         // List tests
         Parent p2 = new Parent(); // id 3
         Parent p3 = new Parent();  // id 4
@@ -110,19 +132,44 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
         p3.setSpouses(Sets.newHashSet());
         p3.setChildren(Sets.newHashSet());
 
-        tx.save(p2);
-        tx.save(p3);
-        tx.save(c3);
-        tx.save(c4);
+        tx.createObject(c1, null);
+        tx.createObject(c2, null);
+        tx.createObject(c3, null);
+        tx.createObject(c4, null);
+
+        tx.createObject(p1, null);
+        tx.createObject(p2, null);
+        tx.createObject(p3, null);
+
+        Book bookWithPercentage = new Book();
+        bookWithPercentage.setTitle("titlewith%percentage");
+        Book bookWithoutPercentage = new Book();
+        bookWithoutPercentage.setTitle("titlewithoutpercentage");
+
+        tx.createObject(bookWithPercentage, null);
+        tx.createObject(bookWithoutPercentage, null);
 
         FunWithPermissions fun = new FunWithPermissions();
-        tx.save(fun);
+        tx.createObject(fun, null);
 
         User user = new User(); //ID 1
         user.setPassword("god");
-        tx.save(user);
+        tx.createObject(user, null);
 
-        tx.commit();
+        Invoice invoice = new Invoice();
+        invoice.setId(1);
+        LineItem item = new LineItem();
+        invoice.setItems(Sets.newHashSet(item));
+        item.setInvoice(invoice);
+        tx.createObject(invoice, null);
+        tx.createObject(item, null);
+
+        ExceptionThrowingBean etb = new ExceptionThrowingBean();
+        etb.setId(1L);
+        tx.createObject(etb, null);
+
+        tx.commit(null);
+        tx.close();
     }
 
     @Test(priority = -1)
@@ -132,6 +179,144 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
 
         JsonApiDocument doc = jsonApiMapper.readJsonApiDocument(actual);
         assertEquals(doc.getData().get().size(), 4);
+    }
+
+    @Test(priority = -1)
+    public void testRootCollectionWithNoOperatorFilter() throws Exception {
+        String actual = given().when().get("/parent?filter[parent.id][isnull]").then().statusCode(HttpStatus.SC_OK)
+                .extract().body().asString();
+
+        JsonApiDocument doc = jsonApiMapper.readJsonApiDocument(actual);
+        assertEquals(doc.getData().get().size(), 0);
+    }
+
+    @Test
+    public void testReadPermissionWithFilterCheckCollectionId() {
+        /*
+         * To see the detail of the FilterExpression check, go to the bean of filterExpressionCheckObj and see
+         * CheckRestrictUser.
+         */
+        String createObj1 = jsonParser.getJson("/ResourceIT/createFilterExpressionCheckObj.1.json");
+
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .body(createObj1)
+                .post("/filterExpressionCheckObj")
+                .then()
+                .statusCode(HttpStatus.SC_CREATED);
+
+        String createObj2 = jsonParser.getJson("/ResourceIT/createFilterExpressionCheckObj.2.json");
+
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .body(createObj2)
+                .post("/filterExpressionCheckObj")
+                .then()
+                .statusCode(HttpStatus.SC_CREATED);
+
+        String createObj3 = jsonParser.getJson("/ResourceIT/createFilterExpressionCheckObj.3.json");
+
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .body(createObj2)
+                .post("/filterExpressionCheckObj")
+                .then()
+                .statusCode(HttpStatus.SC_CREATED);
+
+        String createAnother = jsonParser.getJson("/ResourceIT/createAnotherFilterExpressionCheckObj.json");
+
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .body(createAnother)
+                .post("/anotherFilterExpressionCheckObj")
+                .then()
+                .statusCode(HttpStatus.SC_CREATED);
+
+        String createAnotherAnother =
+                jsonParser.getJson("/ResourceIT/createAnotherFilterExpressionCheckObj2.json");
+
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .body(createAnotherAnother)
+                .post("/anotherFilterExpressionCheckObj")
+                .then()
+                .statusCode(HttpStatus.SC_CREATED);
+
+        //The User ID is set to one so the following get request won't return record including
+        // filterExpressionCheckObj.id != User'id.
+
+        //test root object collection, should just receive 2 out of 3 records.
+        String getResult1 = given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/filterExpressionCheckObj")
+                .then()
+                .statusCode(HttpStatus.SC_OK)
+                .extract().response().asString();
+
+        //test authentication pass querying with ID == 1
+        String getResult2 = given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/filterExpressionCheckObj/1")
+                .then()
+                .statusCode(HttpStatus.SC_OK)
+                .extract().response().asString();
+
+        //test authentication pass querying with ID == 2, it shouldn't contain attribute "name".
+        String getResult3 = given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/filterExpressionCheckObj/2")
+                .then()
+                .statusCode(HttpStatus.SC_OK)
+                .extract().response().asString();
+
+        //test authentication fail querying with ID == 3
+        String getResult4 = given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/filterExpressionCheckObj/3")
+                .then()
+                .statusCode(HttpStatus.SC_NOT_FOUND)
+                .extract().response().asString();
+
+        //test authentication pass query a relation of object
+        String getResult5 = given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/filterExpressionCheckObj/1/listOfAnotherObjs")
+                .then()
+                .statusCode(HttpStatus.SC_OK)
+                .extract().response().asString();
+
+        //test authentication pass query a relation of object
+        String getResult6 = given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/anotherFilterExpressionCheckObj")
+                .then()
+                .statusCode(HttpStatus.SC_OK)
+                .extract().response().asString();
+
+        String expected1 = "{\"data\":[{\"type\":\"filterExpressionCheckObj\",\"id\":\"1\",\"attributes\":{\"name\":\"obj1\"},\"relationships\":{\"listOfAnotherObjs\":{\"data\":[{\"type\":\"anotherFilterExpressionCheckObj\",\"id\":\"1\"}]}}},{\"type\":\"filterExpressionCheckObj\",\"id\":\"2\",\"relationships\":{\"listOfAnotherObjs\":{\"data\":[]}}}]}";
+
+        String expected2 = "{\"data\":{\"type\":\"filterExpressionCheckObj\",\"id\":\"1\",\"attributes\":{\"name\":\"obj1\"},\"relationships\":{\"listOfAnotherObjs\":{\"data\":[{\"type\":\"anotherFilterExpressionCheckObj\",\"id\":\"1\"}]}}}}";
+
+        String expected3 = "{\"data\":{\"type\":\"filterExpressionCheckObj\",\"id\":\"2\",\"relationships\":{\"listOfAnotherObjs\":{\"data\":[]}}}}";
+
+        String expected5 = "{\"data\":[{\"type\":\"anotherFilterExpressionCheckObj\",\"id\":\"1\",\"attributes\":{\"anotherName\":\"anotherObj1\",\"createDate\":1999},\"relationships\":{\"linkToParent\":{\"data\":[{\"type\":\"filterExpressionCheckObj\",\"id\":\"1\"}]}}}]}";
+
+        assertEquals(getResult1, expected1);
+        assertEquals(getResult2, expected2);
+        assertEquals(getResult3, expected3);
+        assertEquals(getResult5, expected5);
+        assertEquals(getResult6, expected5);
     }
 
     @Test
@@ -224,7 +409,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .patch("/parent/2")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
 
         String actual = given()
             .contentType(JSONAPI_CONTENT_TYPE)
@@ -281,7 +467,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .patch("/parent/4")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
 
         String actual = given()
             .contentType(JSONAPI_CONTENT_TYPE)
@@ -301,7 +488,7 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
         // Sort is not enabled-- order agnostic.
         String id1;
         String id2;
-        if (rel1.equals("4")) {
+        if ("4".equals(rel1)) {
             id1 = rel1;
             id2 = rel2;
         } else {
@@ -325,7 +512,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .patch("/parent/4")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
 
         String actual = given()
             .contentType(JSONAPI_CONTENT_TYPE)
@@ -348,7 +536,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .patch("/parent/4")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
     }
 
     @Test(priority = 7)
@@ -362,7 +551,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .patch("/parent/4")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
 
         String actual = given()
             .contentType(JSONAPI_CONTENT_TYPE)
@@ -554,7 +744,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .patch("/parent/4/relationships/children")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
 
         String actual = given()
             .contentType(JSONAPI_CONTENT_TYPE)
@@ -573,7 +764,7 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
         // Sort is not enabled-- order agnostic.
         String id1;
         String id2;
-        if (rel1.equals("4")) {
+        if ("4".equals(rel1)) {
             id1 = rel1;
             id2 = rel2;
         } else {
@@ -595,7 +786,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .patch("/parent/4/relationships/children")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
     }
 
     @Test(priority = 11)
@@ -631,6 +823,16 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(isEmptyOrNullString());
     }
 
+    @Test(priority = 11)
+    public void testDeleteWithCascade() {
+        given()
+            .contentType(JSONAPI_CONTENT_TYPE)
+            .accept(JSONAPI_CONTENT_TYPE)
+            .delete("/invoice/1")
+            .then()
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .body(isEmptyOrNullString());
+    }
 
     @Test(priority = 12)
     public void failDeleteParent() {
@@ -768,7 +970,9 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request1)
             .patch("/fun/1")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
+
         final String expected1 = jsonParser.getJson("/ResourceIT/testAddAndRemoveOneToOneRelationship.json");
         final String actual1 = given().when().get("/fun/1").then().statusCode(HttpStatus.SC_OK).extract().body().asString();
         assertEqualDocuments(actual1, expected1);
@@ -781,7 +985,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request2)
             .patch("/fun/1")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
         final String expected2 = jsonParser.getJson("/ResourceIT/testAddAndRemoveOneToOneRelationship.2.json");
         final String actual2 = given().when().get("/fun/1").then().statusCode(HttpStatus.SC_OK).extract().body().asString();
         assertEqualDocuments(actual2, expected2);
@@ -1005,7 +1210,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .post("/parent/5/children/6/relationships/parents")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
         String response = given()
             .contentType(JSONAPI_CONTENT_TYPE)
             .accept(JSONAPI_CONTENT_TYPE)
@@ -1027,7 +1233,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .delete("/parent/5/children/6/relationships/parents")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
         given()
             .contentType(JSONAPI_CONTENT_TYPE)
             .accept(JSONAPI_CONTENT_TYPE)
@@ -1105,6 +1312,9 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
 
     @Test(priority = 28)
     public void patchExtBadValue() throws IOException {
+        // NOTE: This is a very hibernate/MySQL-centric test
+        // TODO: If we want this test suite to be a universal suite for datastores, we need to refactor
+        // these implementation details.
         String request = jsonParser.getJson("/ResourceIT/patchExtBadValue.req.json");
 
         JsonNode result = jsonApiMapper.getObjectMapper().readTree(given()
@@ -1113,19 +1323,18 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .patch("/")
             .then()
-            .statusCode(HttpStatus.SC_BAD_REQUEST)
+            .statusCode(HttpStatus.SC_LOCKED)
             .extract()
             .body()
             .asString());
 
         JsonNode errors = result.get("errors");
-        Assert.assertNotNull(errors);
-        Assert.assertEquals(errors.size(), 3);
+        assertNotNull(errors);
+        assertEquals(errors.size(), 1);
 
-        String error = errors.get(2).get("detail").asText();
-        String expected = "Unknown identifier '2d1b";
-        Assert.assertTrue(error.startsWith(expected), "Error does not start with '" + expected + "'");
-        Assert.assertEquals(errors.get(2).get("status").asInt(), 404);
+        String error = errors.get(0).asText();
+        String expected = "TransactionException:";
+        assertTrue(error.startsWith(expected), "Error does not start with '" + expected + "' but found " + error);
     }
 
     @Test(priority = 29)
@@ -1354,7 +1563,7 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
     public void testCreatedRootNoReadPermRequired() {
         String req = jsonParser.getJson("/ResourceIT/testPatchExtNoReadPermForNew.req.json");
         String badReq = "[{\n"
-                 + "    \"op\": \"add\",\n"
+                 + "    \"op\": \"add\","
                  + "    \"path\": \"/1/child\",\n"
                  + "    \"value\": {\n"
                  + "      \"type\": \"child\",\n"
@@ -1376,8 +1585,8 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
                 .body(badReq)
                 .patch("/specialread")
                 .then()
-                .statusCode(HttpStatus.SC_FORBIDDEN)
-                .body(equalTo("{\"errors\":[\"ForbiddenAccessException\"]}"));
+                .statusCode(HttpStatus.SC_BAD_REQUEST)
+                .body(equalTo("{\"errors\":[{\"detail\":null,\"status\":403}]}"));
     }
 
     @Test(priority = 38)
@@ -1418,6 +1627,80 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
                 .then()
                 .statusCode(HttpStatus.SC_FORBIDDEN)
                 .body(equalTo("{\"errors\":[\"ForbiddenAccessException\"]}"));
+    }
+
+    @Test(priority = 40)
+    public void testInverseDeleteFromCollection() {
+        // NOTE: This only tests this behavior is correct BECAUSE of the Child4Parent10 check.
+        // It's a bit contrived, but we shouldn't lose the logic.
+        // The problem: when deleting an inverse relation, it checks whether it can update its inverse field back
+        // to the original. This is flawed logic since you're deleting the original in the first place (and that check
+        // succeeded if we got there).
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .delete("/parent/10/children/4")
+                .then()
+                .statusCode(204);
+    }
+
+    @Test(priority = 41)
+    public void testPostInvalidRelationship() {
+        // Note: This tests the correct response when POSTing a resource with a not "include" relationship. The server
+        // should returns UnknownEntityException rather than NPE.
+        String createRoot = jsonParser.getJson("/ResourceIT/testPostWithInvalidRelationship.json");
+
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .body(createRoot)
+                .post("resourceWithInvalidRelationship")
+                .then()
+                .statusCode(HttpStatus.SC_BAD_REQUEST);
+    }
+
+    @Test(priority = 42)
+    public void testSortByIdRootableTopLevel() {
+        String sortByIdAscendingTopLevel = jsonParser.getJson("/ResourceIT/sortByIdRootableTopLevelAscending.json");
+        given()
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/parent?sort=id")
+                .then()
+                .body(equalTo(sortByIdAscendingTopLevel));
+
+        String sortByIdDescendingTopLevel = jsonParser.getJson("/ResourceIT/sortByIdRootableTopLevelDescending.json");
+        given()
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/parent?sort=-id")
+                .then()
+                .body(equalTo(sortByIdDescendingTopLevel));
+    }
+
+    @Test(priority = 42)
+    public void testSortByIdNonRootableTopLevel() {
+        String sortByIdAscendingTopLevel = jsonParser.getJson("/ResourceIT/sortByIdNonRootableTopLevelAscending.json");
+        given()
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/parent/2/children?sort=id")
+                .then()
+                .body(equalTo(sortByIdAscendingTopLevel));
+
+        String sortByIdDescendingTopLevel = jsonParser.getJson("/ResourceIT/sortByIdNonRootableTopLevelDescending.json");
+        given()
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/parent/2/children?sort=-id")
+                .then()
+                .body(equalTo(sortByIdDescendingTopLevel));
+    }
+
+    @Test
+    public void testExceptionThrowingBean() {
+        // Ensure web exception from bean gets bubbled up
+        given()
+                .accept(JSONAPI_CONTENT_TYPE)
+                .get("/exceptionThrowingBean/1")
+                .then()
+                .statusCode(Status.GONE.getStatusCode());
     }
 
     @Test
@@ -1504,16 +1787,18 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .post("/assignedIdString")
             .then()
-            .statusCode(HttpStatus.SC_FORBIDDEN);
+            .statusCode(HttpStatus.SC_BAD_REQUEST);
     }
 
     @Test
     public void elideBypassSecurity() {
         String expected = jsonParser.getJson("/ResourceIT/elideBypassSecurity.json");
 
-        Elide elide = new Elide.Builder(new TestAuditLogger(), AbstractIntegrationTestInitializer.getDatabaseManager())
-                .permissionExecutor(BypassPermissionExecutor.class)
-                .build();
+        Elide elide = new Elide(new ElideSettingsBuilder(AbstractIntegrationTestInitializer.getDatabaseManager())
+                .withAuditLogger(new TestAuditLogger())
+                .withPermissionExecutor(BypassPermissionExecutor.class)
+                .withEntityDictionary(new EntityDictionary(TestCheckMappings.MAPPINGS))
+                .build());
         ElideResponse response =
                 elide.get("parent/1/children/1", new MultivaluedHashMap<>(), -1);
         assertEquals(response.getResponseCode(), HttpStatus.SC_OK);
@@ -1522,7 +1807,10 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
 
     @Test
     public void elideSecurityEnabled() {
-        Elide elide = new Elide.Builder(new TestAuditLogger(), AbstractIntegrationTestInitializer.getDatabaseManager()).build();
+        Elide elide = new Elide(new ElideSettingsBuilder(AbstractIntegrationTestInitializer.getDatabaseManager())
+                .withEntityDictionary(new EntityDictionary(TestCheckMappings.MAPPINGS))
+                .withAuditLogger(new TestAuditLogger())
+                .build());
         ElideResponse response = elide.get("parent/1/children", new MultivaluedHashMap<>(), -1);
         assertEquals(response.getResponseCode(), HttpStatus.SC_OK);
         assertEquals(response.getBody(), "{\"data\":[]}");
@@ -1539,10 +1827,24 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
             .body(request)
             .patch("/user/1")
             .then()
-            .statusCode(HttpStatus.SC_NO_CONTENT);
+            .statusCode(HttpStatus.SC_NO_CONTENT)
+            .header(HttpHeaders.CONTENT_LENGTH, (String) null);
 
         given().when().get("/user/1").then().statusCode(HttpStatus.SC_OK)
             .body(equalTo(expected));
+    }
+
+    @Test
+    public void testPrivilegeEscalation() throws Exception {
+        String request = jsonParser.getJson("/ResourceIT/testUserRoleModification.req.json");
+
+        given()
+            .contentType(JSONAPI_CONTENT_TYPE)
+            .accept(JSONAPI_CONTENT_TYPE)
+            .body(request)
+            .patch("/user/1")
+            .then()
+            .statusCode(HttpStatus.SC_FORBIDDEN);
     }
 
     // Update checks should be _deferred_ (neither ignored nor aggressively applied) on newly created objects.
@@ -1580,6 +1882,91 @@ public class ResourceIT extends AbstractIntegrationTestInitializer {
                 .patch("/createButNoUpdate/1")
                 .then()
                 .statusCode(HttpStatus.SC_FORBIDDEN);
+    }
+
+    @Test
+    public void testPatchDeferredOnCreate() {
+        String request = jsonParser.getJson("/ResourceIT/testPatchDeferredOnCreate.req.json");
+        String expected = jsonParser.getJson("/ResourceIT/testPatchDeferredOnCreate.json");
+        given()
+            .contentType(JSONAPI_CONTENT_TYPE_WITH_JSON_PATCH_EXTENSION)
+            .accept(JSONAPI_CONTENT_TYPE_WITH_JSON_PATCH_EXTENSION)
+            .body(request)
+            .patch("/")
+            .then()
+            .statusCode(HttpStatus.SC_FORBIDDEN)
+            .body(equalTo(expected));
+    }
+
+    @DataProvider (name = "like_queries")
+    public Object[][] likeQueryProvider() {
+        return new Object[][]{
+                {"filter[book.title][infix]=with%perce", 1},
+                {"filter[book.title][prefix]=titlewith%perce", 1},
+                {"filter[book.title][postfix]=with%percentage", 1}
+        };
+    }
+
+    @Test(dataProvider = "like_queries")
+    public void testSpecialCharacterLikeQuery(String filterParam, int noOfRecords) throws Exception {
+        String actual = given().when().get(String.format("/book?%s", filterParam)).then().statusCode(HttpStatus.SC_OK)
+                .extract().body().asString();
+        JsonApiDocument doc = jsonApiMapper.readJsonApiDocument(actual);
+        assertEquals(doc.getData().get().size(), noOfRecords);
+
+    }
+
+    @DataProvider (name = "like_queries_hql")
+    public Object[][] queryProviderHQL() {
+        Path.PathElement pathToTitle = new Path.PathElement(Book.class, String.class, "title");
+
+        return new Object[][]{
+                {new InfixPredicate(pathToTitle, "with%perce"), 1},
+                {new PrefixPredicate(pathToTitle, "titlewith%perce"), 1},
+                {new PostfixPredicate(pathToTitle, "with%percentage"), 1}
+        };
+    }
+
+    @Test (dataProvider = "like_queries_hql")
+    public void testSpecialCharacterLikeQueryHQL(FilterPredicate filterPredicate, int noOfRecords) throws Exception {
+        DataStoreTransaction tx = dataStore.beginReadTransaction();
+        RequestScope scope = mock(RequestScope.class);
+        EntityDictionary dictionary = new EntityDictionary(new HashMap<>());
+        dictionary.bindEntity(Book.class);
+        when(scope.getDictionary()).thenReturn(dictionary);
+        Pagination pagination = mock(Pagination.class);
+        when(pagination.isGenerateTotals()).thenReturn(true);
+        tx.loadObjects(Book.class, Optional.of(filterPredicate), Optional.empty(), Optional.of(pagination), scope);
+        tx.commit(scope);
+        tx.close();
+        verify(pagination).setPageTotals(noOfRecords);
+    }
+
+    @Test
+    public void testPaginationLimitOverrides() {
+        // Well below the limit
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE_WITH_JSON_PATCH_EXTENSION)
+                .accept(JSONAPI_CONTENT_TYPE_WITH_JSON_PATCH_EXTENSION)
+                .get("/parent?page[size]=10")
+                .then()
+                .statusCode(HttpStatus.SC_OK);
+
+        // At the limit
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE_WITH_JSON_PATCH_EXTENSION)
+                .accept(JSONAPI_CONTENT_TYPE_WITH_JSON_PATCH_EXTENSION)
+                .get("/parent?page[size]=100000")
+                .then()
+                .statusCode(HttpStatus.SC_OK);
+
+        // Above the limit
+        given()
+                .contentType(JSONAPI_CONTENT_TYPE_WITH_JSON_PATCH_EXTENSION)
+                .accept(JSONAPI_CONTENT_TYPE_WITH_JSON_PATCH_EXTENSION)
+                .get("/parent?page[size]=100001")
+                .then()
+                .statusCode(HttpStatus.SC_BAD_REQUEST);
     }
 
     // TODO: Test that user checks still apply at commit time

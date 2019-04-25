@@ -5,11 +5,11 @@
  */
 package com.yahoo.elide.security;
 
-import org.antlr.v4.runtime.tree.ParseTree;
+import com.yahoo.elide.core.filter.expression.FilterExpression;
+import com.yahoo.elide.security.permissions.ExpressionResult;
 
 import java.lang.annotation.Annotation;
-import java.util.function.BiFunction;
-import java.util.function.Function;
+import java.util.Optional;
 
 /**
  * Interface describing classes responsible for managing the life-cycle and execution of checks.
@@ -20,100 +20,93 @@ public interface PermissionExecutor {
     /**
      * Check permission on class.
      *
+     * @param <A> type parameter
      * @param annotationClass annotation class
      * @param resource resource
-     * @param <A> type parameter
      * @see com.yahoo.elide.annotation.CreatePermission
      * @see com.yahoo.elide.annotation.ReadPermission
      * @see com.yahoo.elide.annotation.UpdatePermission
      * @see com.yahoo.elide.annotation.DeletePermission
+     * @return the results of evaluating the permission
      */
-    <A extends Annotation> void checkPermission(Class<A> annotationClass, PersistentResource resource);
+    <A extends Annotation> ExpressionResult checkPermission(Class<A> annotationClass, PersistentResource resource);
 
     /**
      * Check permission on class.
      *
+     * @param <A> type parameter
      * @param annotationClass annotation class
      * @param resource resource
      * @param changeSpec ChangeSpec
-     * @param <A> type parameter
      * @see com.yahoo.elide.annotation.CreatePermission
      * @see com.yahoo.elide.annotation.ReadPermission
      * @see com.yahoo.elide.annotation.UpdatePermission
      * @see com.yahoo.elide.annotation.DeletePermission
+     * @return the results of evaluating the permission
      */
-    <A extends Annotation> void checkPermission(Class<A> annotationClass,
-                                                PersistentResource resource,
-                                                ChangeSpec changeSpec);
+    <A extends Annotation> ExpressionResult checkPermission(Class<A> annotationClass,
+                                                            PersistentResource resource,
+                                                            ChangeSpec changeSpec);
 
     /**
      * Check for permissions on a specific field.
      *
+     * @param <A> type parameter
      * @param resource resource
      * @param changeSpec changepsec
      * @param annotationClass annotation class
      * @param field field to check
-     * @param <A> type parameter
+     * @return the results of evaluating the permission
      */
-    <A extends Annotation> void checkSpecificFieldPermissions(PersistentResource<?> resource,
-                                                              ChangeSpec changeSpec,
-                                                              Class<A> annotationClass,
-                                                              String field);
+    <A extends Annotation> ExpressionResult checkSpecificFieldPermissions(PersistentResource<?> resource,
+                                                                          ChangeSpec changeSpec,
+                                                                          Class<A> annotationClass,
+                                                                          String field);
 
     /**
      * Check for permissions on a specific field deferring all checks.
      *
+     * @param <A> type parameter
      * @param resource resource
      * @param changeSpec changepsec
      * @param annotationClass annotation class
      * @param field field to check
-     * @param <A> type parameter
+     * @return the results of evaluating the permission
      */
-    <A extends Annotation> void checkSpecificFieldPermissionsDeferred(PersistentResource<?> resource,
-                                                                      ChangeSpec changeSpec,
-                                                                      Class<A> annotationClass,
-                                                                      String field);
-
-    /**
-     * Check strictly user permissions on a specific field and entity.
-     *
-     * @param resource Resource
-     * @param annotationClass Annotation class
-     * @param field Field
-     * @param <A> type parameter
-     */
-    <A extends Annotation> void checkUserPermissions(PersistentResource<?> resource,
-                                                     Class<A> annotationClass,
-                                                     String field);
+    <A extends Annotation> ExpressionResult checkSpecificFieldPermissionsDeferred(PersistentResource<?> resource,
+                                                                                  ChangeSpec changeSpec,
+                                                                                  Class<A> annotationClass,
+                                                                                  String field);
 
     /**
      * Check strictly user permissions on an entity.
      *
+     * @param <A> type parameter
      * @param resourceClass Resource class
      * @param annotationClass Annotation class
-     * @param <A> type parameter
+     * @return the results of evaluating the permission
      */
-    <A extends Annotation> void checkUserPermissions(Class<?> resourceClass, Class<A> annotationClass);
+    <A extends Annotation> ExpressionResult checkUserPermissions(Class<?> resourceClass, Class<A> annotationClass);
 
     /**
-     * Execute commmit checks.
+     * Get the read filter, if defined.
+     *
+     * @param resourceClass the class to check for a filter
+     * @return the an optional containg the filter
+     */
+    Optional<FilterExpression> getReadPermissionFilter(Class<?> resourceClass);
+
+    /**
+     * Execute commit checks.
      */
     void executeCommitChecks();
 
     /**
-     * Method to build criterion check.
+     * Return useful information about the check evaluation.
      *
-     * @param permissions Permissions to visit
-     * @param criterionNegater Function to apply negation to a criterion
-     * @param andCriterionJoiner Function to combine criteria with an and condition
-     * @param orCriterionJoiner Function to combine criteria with an or condition
-     * @param <T> type parameter
-     * @return Built criterion if possible else null. Default always returns null.
+     * @return a description describing check execution
      */
-    default <T> T getCriterion(ParseTree permissions,
-                               Function<T, T> criterionNegater,
-                               BiFunction<T, T, T> andCriterionJoiner,
-                               BiFunction<T, T, T> orCriterionJoiner) {
+    default String printCheckStats() {
         return null;
     }
 

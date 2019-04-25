@@ -8,12 +8,12 @@
     <modelVersion>4.0.0</modelVersion>
     <artifactId>elide-blog-example</artifactId>
     <packaging>jar</packaging>
-    <name>Elide Example: Persistence API with Security</name>
+    <name>Elide Example: Hibernate5 API with Security</name>
     <description>Elide example using javax.persistence, MySQL and Elide Security</description>
     <parent>
         <groupId>com.yahoo.elide</groupId>
         <artifactId>elide-example-parent-pom</artifactId>
-        <version>2.3.4-SNAPSHOT</version>
+        <version>4.4.2-SNAPSHOT</version>
     </parent>
 
     <properties>
@@ -29,12 +29,12 @@
         <dependency>
             <groupId>com.yahoo.elide</groupId>
             <artifactId>elide-core</artifactId>
-            <version>2.3.4-SNAPSHOT</version>
+            <version>4.4.2-SNAPSHOT</version>
         </dependency>
         <dependency>
             <groupId>com.yahoo.elide</groupId>
             <artifactId>elide-datastore-hibernate5</artifactId>
-            <version>2.3.4-SNAPSHOT</version>
+            <version>4.4.2-SNAPSHOT</version>
         </dependency>
 
         <!-- Jetty -->
@@ -56,6 +56,17 @@
             <groupId>org.glassfish.jersey.containers</groupId>
             <artifactId>jersey-container-jetty-servlet</artifactId>
             <version>RELEASE</version>
+        </dependency>
+        <dependency>
+            <groupId>org.glassfish.jersey.inject</groupId>
+            <artifactId>jersey-hk2</artifactId>
+            <version>RELEASE</version>
+        </dependency>
+        <!-- JAX RS -->
+        <dependency>
+            <groupId>javax.ws.rs</groupId>
+            <artifactId>javax.ws.rs-api</artifactId>
+            <version>2.1-m05</version>
         </dependency>
         <!-- Logging -->
         <dependency>
@@ -84,19 +95,17 @@
         <dependency>
             <groupId>mysql</groupId>
             <artifactId>mysql-connector-java</artifactId>
-            <version>5.1.37</version>
             <scope>runtime</scope>
         </dependency>
         <!-- JSON -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
-            <version>2.6.3</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.6.3</version>
+            <version>${version.jackson}</version>
         </dependency>
 
         <!-- Testing -->
@@ -121,7 +130,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.yahoo.elide.example.persistence.Main</mainClass>
+                            <mainClass>com.yahoo.elide.example.Main</mainClass>
                         </manifest>
                     </archive>
                 </configuration>

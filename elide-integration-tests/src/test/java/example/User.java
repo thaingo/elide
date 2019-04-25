@@ -5,14 +5,16 @@
  */
 package example;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.yahoo.elide.annotation.ComputedAttribute;
 import com.yahoo.elide.annotation.Include;
+import com.yahoo.elide.annotation.UpdatePermission;
+import com.yahoo.elide.security.ChangeSpec;
+import com.yahoo.elide.security.RequestScope;
+import com.yahoo.elide.security.checks.OperationCheck;
+
+import java.util.Optional;
 
 import javax.persistence.Entity;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
-import javax.persistence.Id;
 import javax.persistence.Transient;
 
 
@@ -21,9 +23,8 @@ import javax.persistence.Transient;
  */
 @Entity
 @Include(rootLevel = true)
-public class User {
-    @JsonIgnore
-    private long id;
+public class User extends BaseId {
+    private int role;
 
     private String reversedPassword;
 
@@ -39,6 +40,7 @@ public class User {
 
     /**
      * Sets the password but first reverses it.
+     * @param password password to 'encrypt'
      */
     @ComputedAttribute
     @Transient
@@ -61,13 +63,24 @@ public class User {
         this.reversedPassword = reversedPassword;
     }
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    public long getId() {
-        return id;
+    @UpdatePermission(expression = "adminRoleCheck OR updateOnCreate")
+    public int getRole() {
+        return role;
     }
 
-    public void setId(long id) {
-        this.id = id;
+    public void setRole(int role) {
+        this.role = role;
+    }
+
+    static public class AdminRoleCheck extends OperationCheck<User> {
+        @Override
+        public boolean ok(User user, RequestScope requestScope, Optional<ChangeSpec> changeSpec) {
+            return (user.getRole() == 1);
+        }
+
+        @Override
+        public String checkIdentifier() {
+            return "adminRoleCheck";
+        }
     }
 }

@@ -6,6 +6,7 @@
 package com.yahoo.elide.core.exceptions;
 
 import com.fasterxml.jackson.databind.JsonNode;
+
 import org.apache.commons.lang3.tuple.Pair;
 
 /**
@@ -15,19 +16,25 @@ public class JsonPatchExtensionException extends HttpStatusException {
     private final Pair<Integer, JsonNode> response;
 
     public JsonPatchExtensionException(int status, final JsonNode errorNode) {
+        super(status, null);
         response = Pair.of(status, errorNode);
     }
 
-    public JsonPatchExtensionException(final Pair<Integer, JsonNode> response) {
-        this.response = response;
-    }
-
+    /**
+     * @deprecated use {@link #getErrorResponse()}
+     */
+    @Deprecated
     public Pair<Integer, JsonNode> getResponse() {
         return response;
     }
 
     @Override
-    public int getStatus() {
-        return response.getLeft();
+    public Pair<Integer, JsonNode> getErrorResponse() {
+        return response;
+    }
+
+    @Override
+    public Pair<Integer, JsonNode> getVerboseErrorResponse() {
+        return response;
     }
 }

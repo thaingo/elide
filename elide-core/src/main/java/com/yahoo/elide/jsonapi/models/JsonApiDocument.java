@@ -7,8 +7,10 @@ package com.yahoo.elide.jsonapi.models;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
-import lombok.ToString;
+
 import org.apache.commons.lang3.builder.HashCodeBuilder;
+
+import lombok.ToString;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -101,7 +103,8 @@ public class JsonApiDocument {
         Collection<Resource> resources = data.get();
         if ((resources == null || other.getData().get() == null) && resources != other.getData().get()) {
             return false;
-        } else if (resources != null) {
+        }
+        if (resources != null) {
             if (resources.size() != other.getData().get().size()
                 || !resources.stream().allMatch(other.getData().get()::contains)) {
                 return false;

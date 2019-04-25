@@ -8,19 +8,24 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.yahoo.elide</groupId>
     <artifactId>elide-parent-pom</artifactId>
-    <version>2.3.4-SNAPSHOT</version>
+    <version>4.4.2-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>Elide: Parent Pom</name>
     <description>Parent pom for Elide project</description>
     <url>https://github.com/yahoo/elide</url>
 
+
+
     <modules>
         <module>elide-annotations</module>
+        <module>elide-example-models</module>
         <module>elide-core</module>
+        <module>elide-graphql</module>
         <module>elide-datastore</module>
         <module>elide-integration-tests</module>
         <module>elide-example</module>
         <module>elide-contrib</module>
+        <module>elide-standalone</module>
     </modules>
 
     <issueManagement>
@@ -70,16 +75,22 @@
         <target.jdk.version>${min.jdk.version}</target.jdk.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <maven.build.timestamp.format>yyyyMMddHHmm</maven.build.timestamp.format>
 
         <!-- dependency versions -->
-        <version.logback>1.1.3</version.logback>
-        <version.jetty>9.3.6.v20151106</version.jetty>
-        <version.restassured>2.7.0</version.restassured>
+        <version.logback>1.1.7</version.logback>
+        <version.jetty>9.4.17.v20190418</version.jetty>
+        <version.restassured>2.9.0</version.restassured>
+        <version.jackson>2.9.8</version.jackson>
+        <hibernate3.version>3.6.10.Final</hibernate3.version>
+        <hibernate5.version>5.2.15.Final</hibernate5.version>
+        <version.mysql>8.0.15</version.mysql>
 
         <!-- TODO: Need to update locations to be relative to the projects using them -->
         <parent.pom.dir>${project.basedir}/..</parent.pom.dir>
         <checkstyle.config.location>${parent.pom.dir}/checkstyle-style.xml</checkstyle.config.location>
-        <checkstyle.suppressions.location>${parent.pom.dir}/checkstyle-suppressions.xml</checkstyle.suppressions.location>
+        <checkstyle.suppressions.location>${parent.pom.dir}/checkstyle-suppressions.xml
+        </checkstyle.suppressions.location>
 
         <dependency.locations.enabled>false</dependency.locations.enabled>
     </properties>
@@ -90,22 +101,27 @@
             <dependency>
                 <groupId>com.yahoo.elide</groupId>
                 <artifactId>elide-annotations</artifactId>
-                <version>2.3.4-SNAPSHOT</version>
+                <version>4.4.2-SNAPSHOT</version>
+            </dependency>
+            <dependency>
+                <groupId>com.yahoo.elide</groupId>
+                <artifactId>elide-example-models</artifactId>
+                <version>4.4.2-SNAPSHOT</version>
             </dependency>
             <dependency>
                 <groupId>org.projectlombok</groupId>
                 <artifactId>lombok</artifactId>
-                <version>1.16.6</version>
+                <version>1.16.10</version>
             </dependency>
             <dependency>
                 <groupId>org.slf4j</groupId>
                 <artifactId>slf4j-api</artifactId>
-                <version>1.7.13</version>
+                <version>1.7.21</version>
             </dependency>
             <dependency>
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
-                <version>18.0</version>
+                <version>20.0</version>
             </dependency>
             <dependency>
                 <groupId>javax.inject</groupId>
@@ -120,7 +136,7 @@
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-lang3</artifactId>
-                <version>3.4</version>
+                <version>3.5</version>
             </dependency>
             <dependency>
                 <groupId>org.eclipse.jetty</groupId>
@@ -131,6 +147,11 @@
                 <groupId>org.eclipse.jetty</groupId>
                 <artifactId>jetty-servlet</artifactId>
                 <version>${version.jetty}</version>
+            </dependency>
+            <dependency>
+                <groupId>mysql</groupId>
+                <artifactId>mysql-connector-java</artifactId>
+                <version>${version.mysql}</version>
             </dependency>
 
             <!-- Test dependencies -->
@@ -149,7 +170,7 @@
             <dependency>
                 <groupId>org.glassfish.jersey.containers</groupId>
                 <artifactId>jersey-container-servlet</artifactId>
-                <version>2.22.1</version>
+                <version>2.24.1</version>
                 <scope>test</scope>
             </dependency>
             <dependency>
@@ -171,22 +192,32 @@
                 </exclusions>
             </dependency>
             <dependency>
-                <groupId>mysql</groupId>
-                <artifactId>mysql-connector-java</artifactId>
-                <version>5.1.37</version>
+                <groupId>com.h2database</groupId>
+                <artifactId>h2</artifactId>
+                <version>1.4.197</version>
                 <scope>test</scope>
             </dependency>
             <dependency>
                 <groupId>org.mockito</groupId>
                 <artifactId>mockito-core</artifactId>
-                <version>2.0.31-beta</version>
+                <version>2.2.26</version>
                 <scope>test</scope>
             </dependency>
             <dependency>
                 <groupId>org.codehaus.groovy</groupId>
                 <artifactId>groovy-all</artifactId>
-                <version>2.4.5</version>
+                <version>2.4.15</version>
                 <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-core</artifactId>
+                <version>${version.jackson}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>${version.jackson}</version>
             </dependency>
             <dependency>
                 <groupId>com.jayway.restassured</groupId>
@@ -219,7 +250,12 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
-                    <version>2.19.1</version>
+                    <version>2.22.1</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <version>2.22.1</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -251,7 +287,7 @@
                         <dependency>
                             <groupId>com.puppycrawl.tools</groupId>
                             <artifactId>checkstyle</artifactId>
-                            <version>6.12.1</version>
+                            <version>8.18</version>
                             <scope>compile</scope>
                         </dependency>
                     </dependencies>
@@ -264,7 +300,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-jar-plugin</artifactId>
-                    <version>2.6</version>
+                    <version>3.0.2</version>
                 </plugin>
                 <plugin>
                     <groupId>org.codehaus.gmaven</groupId>
@@ -288,7 +324,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.3</version>
+                <version>3.6.0</version>
                 <configuration>
                     <source>${source.jdk.version}</source>
                     <target>${target.jdk.version}</target>
@@ -301,7 +337,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-source-plugin</artifactId>
-                <version>2.4</version>
+                <version>3.0.1</version>
                 <executions>
                     <execution>
                         <id>attach-sources</id>
@@ -314,7 +350,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
-                <version>2.10.3</version>
+                <version>2.10.4</version>
                 <executions>
                     <execution>
                         <id>attach-javadocs</id>
@@ -332,7 +368,7 @@
                     <dependency>
                         <groupId>org.apache.maven.scm</groupId>
                         <artifactId>maven-scm-provider-gitexe</artifactId>
-                        <version>1.9.4</version>
+                        <version>1.9.5</version>
                     </dependency>
                 </dependencies>
                 <configuration>
@@ -342,48 +378,70 @@
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
-                <version>0.7.5.201505241946</version>
+                <version>0.8.1</version>
                 <executions>
                     <execution>
-                        <id>prepare-agent</id>
+                        <id>default-prepare-agent</id>
                         <goals>
                             <goal>prepare-agent</goal>
                         </goals>
                     </execution>
                     <execution>
-                        <id>report</id>
-                        <goals>
-                            <goal>report</goal>
-                        </goals>
-                    </execution>
-                    <execution>
-                        <id>pre-integration-test</id>
-                        <phase>pre-integration-test</phase>
+                        <id>default-prepare-agent-integration</id>
                         <goals>
                             <goal>prepare-agent-integration</goal>
                         </goals>
                     </execution>
                     <execution>
-                        <id>post-integration-test</id>
-                        <phase>post-integration-test</phase>
+                        <id>default-report</id>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>default-report-integration</id>
                         <goals>
                             <goal>report-integration</goal>
                         </goals>
+                    </execution>
+                    <execution>
+                        <id>default-check</id>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <!-- see https://www.eclemma.org/jacoco/trunk/doc/check-mojo.html -->
+                            <rules>
+                                <rule>
+                                    <element>CLASS</element>
+                                    <excludes>
+                                        <exclude>*Test</exclude>
+                                    </excludes>
+                                    <limits>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0%</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
             <plugin>
                 <groupId>org.eluder.coveralls</groupId>
                 <artifactId>coveralls-maven-plugin</artifactId>
-                <version>4.1.0</version>
+                <version>4.3.0</version>
                 <configuration>
-                    <repoToken>${env.coveralls_repo_token}</repoToken>
+                    <repoToken>${env.COVERALLS_API_TOKEN}</repoToken>
                 </configuration>
             </plugin>
             <plugin>
                 <groupId>com.versioneye</groupId>
                 <artifactId>versioneye-maven-plugin</artifactId>
-                <version>3.5.1</version>
+                <version>3.11.0</version>
                 <configuration>
                     <apiKey>${env.versioneye_api_key}</apiKey>
                     <parentGroupId>com.yahoo.elide</parentGroupId>
@@ -392,6 +450,33 @@
                     <skipScopes>test</skipScopes>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>1.4.1</version>
+                <executions>
+                    <execution>
+                        <id>enforce-java</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[${min.jdk.version},${max.jdk.version}]</version>
+                                </requireJavaVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
+        <extensions>
+            <extension>
+                <groupId>org.apache.maven.wagon</groupId>
+                <artifactId>wagon-ssh-external</artifactId>
+                <version>1.0-beta-6</version>
+            </extension>
+        </extensions>
     </build>
 </project>

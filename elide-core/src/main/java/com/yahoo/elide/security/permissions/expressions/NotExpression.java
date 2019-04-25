@@ -5,13 +5,11 @@
  */
 package com.yahoo.elide.security.permissions.expressions;
 
+import static com.yahoo.elide.security.permissions.ExpressionResult.DEFERRED;
+import static com.yahoo.elide.security.permissions.ExpressionResult.FAIL;
+import static com.yahoo.elide.security.permissions.ExpressionResult.PASS;
 
 import com.yahoo.elide.security.permissions.ExpressionResult;
-
-import static com.yahoo.elide.security.permissions.ExpressionResult.PASS_RESULT;
-import static com.yahoo.elide.security.permissions.ExpressionResult.DEFERRED_RESULT;
-import static com.yahoo.elide.security.permissions.ExpressionResult.Status.FAIL;
-import static com.yahoo.elide.security.permissions.ExpressionResult.Status.PASS;
 
 /**
  * Representation of a "not" expression.
@@ -30,17 +28,22 @@ public class NotExpression implements Expression {
 
 
     @Override
-    public ExpressionResult evaluate() {
-        ExpressionResult logicalResult = logical.evaluate();
+    public ExpressionResult evaluate(EvaluationMode mode) {
+        ExpressionResult result = logical.evaluate(mode);
 
-        if (logicalResult.getStatus() == FAIL) {
-            return PASS_RESULT;
+        if (result == FAIL) {
+            return PASS;
         }
 
-        if (logicalResult.getStatus() == PASS) {
-            return new ExpressionResult(FAIL, logicalResult.getFailureMessage());
+        if (result == PASS) {
+            return FAIL;
         }
 
-        return DEFERRED_RESULT;
+        return DEFERRED;
+    }
+
+    @Override
+    public String toString() {
+        return String.format("NOT (%s)", logical);
     }
 }

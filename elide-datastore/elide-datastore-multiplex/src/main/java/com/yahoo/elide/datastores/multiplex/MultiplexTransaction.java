@@ -7,15 +7,23 @@ package com.yahoo.elide.datastores.multiplex;
 
 import com.yahoo.elide.core.DataStore;
 import com.yahoo.elide.core.DataStoreTransaction;
-import com.yahoo.elide.core.FilterScope;
+import com.yahoo.elide.core.EntityDictionary;
+import com.yahoo.elide.core.RelationshipType;
+import com.yahoo.elide.core.RequestScope;
 import com.yahoo.elide.core.exceptions.InvalidCollectionException;
-import com.yahoo.elide.core.filter.Predicate;
+import com.yahoo.elide.core.filter.FilterPredicate;
+import com.yahoo.elide.core.filter.Operator;
+import com.yahoo.elide.core.filter.expression.FilterExpression;
+import com.yahoo.elide.core.filter.expression.PredicateExtractionVisitor;
+import com.yahoo.elide.core.pagination.Pagination;
+import com.yahoo.elide.core.sort.Sorting;
 import com.yahoo.elide.security.User;
 
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -57,41 +65,48 @@ public abstract class MultiplexTransaction implements DataStoreTransaction {
     }
 
     @Override
-    public <T> T createObject(Class<T> createObject) {
-        return getTransaction(createObject).createObject(createObject);
+    public void createObject(Object entity, RequestScope scope) {
+        getTransaction(entity).createObject(entity, scope);
+    }
+
+
+    @Override
+    public Object loadObject(Class<?> entityClass,
+                             Serializable id,
+                             Optional<FilterExpression> filterExpression,
+                             RequestScope scope) {
+        return getTransaction(entityClass).loadObject(entityClass, id, filterExpression, scope);
     }
 
     @Override
-    public <T> T loadObject(Class<T> loadClass, Serializable id) {
-        return getTransaction(loadClass).loadObject(loadClass, id);
+    public Iterable<Object> loadObjects(
+            Class<?> entityClass,
+            Optional<FilterExpression> filterExpression,
+            Optional<Sorting> sorting,
+            Optional<Pagination> pagination,
+            RequestScope scope) {
+        return getTransaction(entityClass).loadObjects(entityClass,
+                filterExpression,
+                sorting,
+                pagination,
+                scope);
     }
 
     @Override
-    public <T> Iterable<T> loadObjects(Class<T> loadClass) {
-        return getTransaction(loadClass).loadObjects(loadClass);
+    public void flush(RequestScope requestScope) {
+        transactions.values().forEach(dataStoreTransaction -> dataStoreTransaction.flush(requestScope));
     }
 
     @Override
-    public <T> Iterable<T> loadObjects(Class<T> entityClass, FilterScope filterScope) {
-        return getTransaction(entityClass).loadObjects(entityClass, filterScope);
+    public void preCommit() {
+        transactions.values().forEach(DataStoreTransaction::preCommit);
     }
 
     @Override
-    public <T> Collection filterCollection(Collection collection, Class<T> entityClass, Set<Predicate> predicates) {
-        return getTransaction(entityClass).filterCollection(collection, entityClass, predicates);
-    }
-
-    @Override
-    public void flush() {
-        transactions.values().forEach(DataStoreTransaction::flush);
-    }
-
-    @Override
-    public void commit() {
+    public void commit(RequestScope scope) {
         // flush all before commit
-        flush();
-        transactions.values().forEach(DataStoreTransaction::commit);
-        transactions.clear();
+        flush(scope);
+        transactions.values().forEach(dataStoreTransaction -> dataStoreTransaction.commit(scope));
     }
 
     @Override
@@ -111,6 +126,7 @@ public abstract class MultiplexTransaction implements DataStoreTransaction {
                 }
             }
         }
+        transactions.clear();
         if (cause != null) {
             throw cause;
         }
@@ -127,5 +143,107 @@ public abstract class MultiplexTransaction implements DataStoreTransaction {
             throw new InvalidCollectionException(entityClass == null ? cls.getName() : entityClass.getName());
         }
         return transaction;
+    }
+
+    protected DataStoreTransaction getRelationTransaction(Object object, String relationName) {
+        EntityDictionary dictionary = multiplexManager.getDictionary();
+        Class<?> relationClass = dictionary.getParameterizedType(object, relationName);
+        return getTransaction(relationClass);
+    }
+
+    @Override
+    public Object getRelation(DataStoreTransaction relationTx,
+                              Object entity,
+                              String relationName,
+                              Optional<FilterExpression> filter,
+                              Optional<Sorting> sorting,
+                              Optional<Pagination> pagination,
+                              RequestScope scope) {
+        relationTx = getRelationTransaction(entity, relationName);
+        DataStoreTransaction entityTransaction = getTransaction(entity.getClass());
+
+        EntityDictionary dictionary = scope.getDictionary();
+        Class<?> relationClass = dictionary.getParameterizedType(entity, relationName);
+        String idFieldName = dictionary.getIdFieldName(relationClass);
+
+        // If different transactions, check if bridgeable and try to bridge
+        if (entityTransaction != relationTx && relationTx instanceof BridgeableTransaction) {
+            BridgeableTransaction bridgeableTx = (BridgeableTransaction) relationTx;
+            RelationshipType relationType = dictionary.getRelationshipType(entity.getClass(), relationName);
+            Serializable id = filter.map(fe -> extractId(fe, idFieldName, relationClass)).orElse(null);
+
+            if (relationType.isToMany()) {
+                return id == null ? bridgeableTx.bridgeableLoadObjects(
+                                this, entity, relationName, filter, sorting, pagination, scope)
+                        : bridgeableTx.bridgeableLoadObject(this, entity, relationName, id, filter, scope);
+            }
+
+            return bridgeableTx.bridgeableLoadObject(this, entity, relationName, id, filter, scope);
+
+        }
+
+        // Otherwise, rely on existing underlying transaction to call correctly into relationTx
+        return entityTransaction.getRelation(relationTx, entity, relationName, filter, sorting, pagination, scope);
+    }
+
+    @Override
+    public void updateToManyRelation(DataStoreTransaction relationTx,
+                                     Object entity, String relationName,
+                                     Set<Object> newRelationships,
+                                     Set<Object> deletedRelationships,
+                                     RequestScope scope) {
+        relationTx = getRelationTransaction(entity, relationName);
+        DataStoreTransaction entityTransaction = getTransaction(entity.getClass());
+        entityTransaction.updateToManyRelation(relationTx, entity, relationName,
+                newRelationships, deletedRelationships, scope);
+    }
+
+    @Override
+    public void updateToOneRelation(DataStoreTransaction relationTx, Object entity,
+                                    String relationName, Object relationshipValue, RequestScope scope) {
+        relationTx = getRelationTransaction(entity, relationName);
+        DataStoreTransaction entityTransaction = getTransaction(entity.getClass());
+        entityTransaction.updateToOneRelation(relationTx, entity, relationName, relationshipValue, scope);
+    }
+
+    @Override
+    public Object getAttribute(Object entity,
+                               String attributeName, RequestScope scope) {
+        DataStoreTransaction transaction = getTransaction(entity.getClass());
+        return transaction.getAttribute(entity, attributeName, scope);
+    }
+
+    @Override
+    public void setAttribute(Object entity, String attributeName, Object attributeValue, RequestScope scope) {
+        DataStoreTransaction transaction = getTransaction(entity.getClass());
+        transaction.setAttribute(entity, attributeName, attributeValue, scope);
+    }
+
+    @Override
+    public FeatureSupport supportsFiltering(Class<?> entityClass, FilterExpression expression) {
+        return getTransaction(entityClass).supportsFiltering(entityClass, expression);
+    }
+
+    @Override
+    public boolean supportsSorting(Class<?> entityClass, Sorting sorting) {
+        return getTransaction(entityClass).supportsSorting(entityClass, sorting);
+    }
+
+    @Override
+    public boolean supportsPagination(Class<?> entityClass) {
+        return getTransaction(entityClass).supportsPagination(entityClass);
+    }
+
+    private Serializable extractId(FilterExpression filterExpression,
+                                   String idFieldName,
+                                   Class<?> relationClass) {
+        Collection<FilterPredicate> predicates = filterExpression.accept(new PredicateExtractionVisitor());
+        return predicates.stream()
+                .filter(p -> p.getEntityType() == relationClass && p.getOperator() == Operator.IN)
+                .filter(p -> p.getValues().size() == 1)
+                .filter(p -> p.getField().equals(idFieldName))
+                .findFirst()
+                .map(p -> (Serializable) p.getValues().get(0))
+                .orElse(null);
     }
 }

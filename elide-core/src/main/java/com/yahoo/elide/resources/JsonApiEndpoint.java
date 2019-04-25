@@ -1,5 +1,5 @@
 /*
- * Copyright 2015, Yahoo Inc.
+ * Copyright 2019, Yahoo Inc.
  * Licensed under the Apache License, Version 2.0
  * See LICENSE file in project root for terms.
  */
@@ -33,17 +33,18 @@ import javax.ws.rs.core.UriInfo;
  */
 @Singleton
 @Produces("application/vnd.api+json")
-@Consumes("application/vnd.api+json")
 @Path("/")
 public class JsonApiEndpoint {
     protected final Elide elide;
     protected final Function<SecurityContext, Object> getUser;
 
+    private static final DefaultOpaqueUserFunction DEFAULT_GET_USER = securityContext -> securityContext;
+
     @Inject
     public JsonApiEndpoint(@Named("elide") Elide elide,
                            @Named("elideUserExtractionFunction") DefaultOpaqueUserFunction getUser) {
         this.elide = elide;
-        this.getUser = getUser == null ? v -> null : getUser;
+        this.getUser = getUser == null ? DEFAULT_GET_USER : getUser;
     }
 
     /**
@@ -56,6 +57,7 @@ public class JsonApiEndpoint {
      */
     @POST
     @Path("{path:.*}")
+    @Consumes("application/vnd.api+json")
     public Response post(
         @PathParam("path") String path,
         @Context SecurityContext securityContext,
@@ -93,6 +95,7 @@ public class JsonApiEndpoint {
      */
     @PATCH
     @Path("{path:.*}")
+    @Consumes("application/vnd.api+json")
     public Response patch(
         @HeaderParam("Content-Type") String contentType,
         @HeaderParam("accept") String accept,
@@ -103,7 +106,7 @@ public class JsonApiEndpoint {
     }
 
     /**
-     * Delete handler.
+     * Delete relationship handler (expects body with resource ids and types).
      *
      * @param path request path
      * @param securityContext security context
@@ -112,6 +115,7 @@ public class JsonApiEndpoint {
      */
     @DELETE
     @Path("{path:.*}")
+    @Consumes("application/vnd.api+json")
     public Response delete(
         @PathParam("path") String path,
         @Context SecurityContext securityContext,
@@ -121,12 +125,5 @@ public class JsonApiEndpoint {
 
     private static Response build(ElideResponse response) {
         return Response.status(response.getResponseCode()).entity(response.getBody()).build();
-    }
-
-    /**
-     * Placeholder for injection frameworks.
-     */
-    public interface DefaultOpaqueUserFunction extends Function<SecurityContext, Object> {
-        // Empty
     }
 }

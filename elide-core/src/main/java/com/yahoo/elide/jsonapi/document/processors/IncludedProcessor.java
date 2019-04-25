@@ -5,16 +5,20 @@
  */
 package com.yahoo.elide.jsonapi.document.processors;
 
-import com.google.common.collect.Lists;
 import com.yahoo.elide.core.PersistentResource;
+import com.yahoo.elide.core.exceptions.ForbiddenAccessException;
+import com.yahoo.elide.core.filter.expression.FilterExpression;
 import com.yahoo.elide.jsonapi.models.JsonApiDocument;
 
-import javax.ws.rs.core.MultivaluedMap;
+import com.google.common.collect.Lists;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+
+import javax.ws.rs.core.MultivaluedMap;
 
 /**
  * A Document Processor that add requested relations to the include block of the JsonApiDocument.
@@ -77,7 +81,15 @@ public class IncludedProcessor implements DocumentProcessor {
         //Pop off a relation of relation path
         String relation = relationPath.remove(0);
 
-        rec.getRelationCheckedFiltered(relation).forEach(resource -> {
+        Optional<FilterExpression> filterExpression = rec.getRequestScope().getExpressionForRelation(rec, relation);
+        Set<PersistentResource> collection;
+        try {
+            collection = rec.getRelationCheckedFiltered(relation, filterExpression, Optional.empty(), Optional.empty());
+        } catch (ForbiddenAccessException e) {
+            return;
+        }
+
+        collection.forEach(resource -> {
             jsonApiDocument.addIncluded(resource.toResource());
 
             //If more relations left in the path, process a level deeper

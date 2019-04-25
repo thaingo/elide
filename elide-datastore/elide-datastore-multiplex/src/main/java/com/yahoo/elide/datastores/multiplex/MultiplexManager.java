@@ -55,6 +55,7 @@ public class MultiplexManager implements DataStore {
                 this.dataStoreMap.put(cls, dataStore);
                 // bind to multiplex dictionary
                 dictionary.bindEntity(cls);
+                dictionary.bindInitializer(subordinateDictionary::initializeEntity, cls);
             }
         }
     }
@@ -75,6 +76,7 @@ public class MultiplexManager implements DataStore {
 
     /**
      * Lookup subordinate database manager for provided entity class.
+     * @param <T> type
      * @param cls provided class
      * @return database manager handling this entity
      */

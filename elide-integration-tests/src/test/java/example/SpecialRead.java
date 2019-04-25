@@ -12,36 +12,36 @@ import com.yahoo.elide.security.ChangeSpec;
 import com.yahoo.elide.security.PersistentResource;
 import com.yahoo.elide.security.RequestScope;
 import com.yahoo.elide.security.checks.OperationCheck;
-import com.yahoo.elide.security.checks.prefab.Common;
+
+import java.util.Optional;
 
 import javax.persistence.Entity;
 import javax.persistence.FetchType;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
-import javax.persistence.Id;
 import javax.persistence.ManyToOne;
-import java.util.Optional;
 
 @Entity
 @Include(rootLevel = true, type = "specialread")
-@ReadPermission(all = {SpecialRead.SpecialValue.class})
-@UpdatePermission(all = {Common.UpdateOnCreate.class})
-public class SpecialRead {
-    public Long id;
+@ReadPermission(expression = "specialValue")
+@UpdatePermission(expression = "updateOnCreate")
+public class SpecialRead extends BaseId {
+    private String value;
+    private Child child;
 
-    public String value;
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    public Child child;
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    public Long getId() {
-        return id;
+    public String getValue() {
+        return value;
     }
 
-    public void setId(Long id) {
-        this.id = id;
+    public void setValue(String value) {
+        this.value = value;
+    }
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    public Child getChild() {
+        return child;
+    }
+
+    public void setChild(Child child) {
+        this.child = child;
     }
 
     public static class SpecialValue extends OperationCheck<SpecialRead> {

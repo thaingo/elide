@@ -5,25 +5,23 @@
  */
 package com.yahoo.elide.parsers.state;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.yahoo.elide.core.HttpStatus;
 import com.yahoo.elide.core.PersistentResource;
 import com.yahoo.elide.core.RequestScope;
-import com.yahoo.elide.core.exceptions.ForbiddenAccessException;
 import com.yahoo.elide.core.exceptions.InvalidEntityBodyException;
 import com.yahoo.elide.core.exceptions.InvalidOperationException;
-import com.yahoo.elide.jsonapi.document.processors.DocumentProcessor;
-import com.yahoo.elide.jsonapi.document.processors.IncludedProcessor;
 import com.yahoo.elide.jsonapi.models.Data;
 import com.yahoo.elide.jsonapi.models.JsonApiDocument;
 import com.yahoo.elide.jsonapi.models.Relationship;
 import com.yahoo.elide.jsonapi.models.Resource;
-import lombok.ToString;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.apache.commons.lang3.tuple.Pair;
 
-import javax.ws.rs.core.MultivaluedMap;
+import lombok.ToString;
+
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -50,7 +48,7 @@ public class RecordTerminalState extends BaseState {
     @Override
     public Supplier<Pair<Integer, JsonNode>> handleGet(StateContext state) {
         ObjectMapper mapper = state.getRequestScope().getMapper().getObjectMapper();
-        return () -> Pair.of(HttpStatus.SC_OK, getResponseBody(record, state.getRequestScope(), mapper));
+        return () -> Pair.of(HttpStatus.SC_OK, getResponseBody(record, state.getRequestScope()));
     }
 
     @Override
@@ -63,7 +61,6 @@ public class RecordTerminalState extends BaseState {
 
     @Override
     public Supplier<Pair<Integer, JsonNode>> handlePatch(StateContext state) {
-        final JsonNode empty = JsonNodeFactory.instance.nullNode();
         JsonApiDocument jsonApiDocument = state.getJsonApiDocument();
 
         Data<Resource> data = jsonApiDocument.getData();
@@ -82,32 +79,13 @@ public class RecordTerminalState extends BaseState {
         }
 
         patch(resource, state.getRequestScope());
-        return () -> Pair.of(HttpStatus.SC_NO_CONTENT, empty);
+        return constructPatchResponse(record, state);
     }
 
     @Override
     public Supplier<Pair<Integer, JsonNode>> handleDelete(StateContext state) {
-        try {
-            record.deleteResource();
-            return () -> Pair.of(HttpStatus.SC_NO_CONTENT, null);
-        } catch (ForbiddenAccessException e) {
-            return () -> Pair.of(e.getStatus(), null);
-        }
-    }
-
-    private JsonNode getResponseBody(PersistentResource rec, RequestScope requestScope, ObjectMapper mapper) {
-        Optional<MultivaluedMap<String, String>> queryParams = requestScope.getQueryParams();
-        JsonApiDocument jsonApiDocument = new JsonApiDocument();
-
-        //TODO Make this a document processor
-        Data<Resource> data = rec == null ? null : new Data<>(rec.toResource());
-        jsonApiDocument.setData(data);
-
-        //TODO Iterate over set of document processors
-        DocumentProcessor includedProcessor = new IncludedProcessor();
-        includedProcessor.execute(jsonApiDocument, rec, queryParams);
-
-        return mapper.convertValue(jsonApiDocument, JsonNode.class);
+        record.deleteResource();
+        return () -> Pair.of(HttpStatus.SC_NO_CONTENT, null);
     }
 
     private boolean patch(Resource resource, RequestScope requestScope) {
@@ -117,9 +95,9 @@ public class RecordTerminalState extends BaseState {
         Map<String, Object> attributes = resource.getAttributes();
         if (attributes != null) {
             for (Map.Entry<String, Object> entry : attributes.entrySet()) {
-                String key = entry.getKey();
+                String fieldName = entry.getKey();
                 Object newVal = entry.getValue();
-                isUpdated |= record.updateAttribute(key, newVal);
+                isUpdated |= record.updateAttribute(fieldName, newVal);
             }
         }
 
@@ -127,12 +105,12 @@ public class RecordTerminalState extends BaseState {
         Map<String, Relationship> relationships = resource.getRelationships();
         if (relationships != null) {
             for (Map.Entry<String, Relationship> entry : relationships.entrySet()) {
-                String key = entry.getKey();
+                String fieldName = entry.getKey();
                 Relationship relationship = entry.getValue();
                 Set<PersistentResource> resources = (relationship == null)
                                                     ? null
                                                     : relationship.toPersistentResources(requestScope);
-                isUpdated |= record.updateRelation(key, resources);
+                isUpdated |= record.updateRelation(fieldName, resources);
             }
         }
 

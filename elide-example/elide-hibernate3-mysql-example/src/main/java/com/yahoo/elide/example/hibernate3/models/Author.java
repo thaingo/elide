@@ -7,17 +7,18 @@ package com.yahoo.elide.example.hibernate3.models;
 
 import com.yahoo.elide.annotation.Include;
 
+import java.util.ArrayList;
+import java.util.Collection;
+
 import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.ManyToMany;
 import javax.persistence.Table;
-import java.util.ArrayList;
-import java.util.Collection;
 
 /**
- * Model for authors
+ * Model for authors.
  */
 @Entity
 @Table(name = "author")

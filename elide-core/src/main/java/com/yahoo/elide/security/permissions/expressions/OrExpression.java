@@ -5,12 +5,12 @@
  */
 package com.yahoo.elide.security.permissions.expressions;
 
+import static com.yahoo.elide.security.permissions.ExpressionResult.DEFERRED;
+import static com.yahoo.elide.security.permissions.ExpressionResult.FAIL;
+import static com.yahoo.elide.security.permissions.ExpressionResult.PASS;
+
 import com.yahoo.elide.security.permissions.ExpressionResult;
 
-import static com.yahoo.elide.security.permissions.ExpressionResult.DEFERRED_RESULT;
-import static com.yahoo.elide.security.permissions.ExpressionResult.PASS_RESULT;
-import static com.yahoo.elide.security.permissions.ExpressionResult.Status.FAIL;
-import static com.yahoo.elide.security.permissions.ExpressionResult.Status.PASS;
 /**
  * Representation of an "or" expression.
  */
@@ -19,6 +19,7 @@ public class OrExpression implements Expression {
     private final Expression right;
 
     public static final OrExpression SUCCESSFUL_EXPRESSION = new OrExpression(Results.SUCCESS, null);
+    public static final OrExpression FAILURE_EXPRESSION = new OrExpression(Results.FAILURE, null);
 
     /**
      * Constructor.
@@ -32,29 +33,32 @@ public class OrExpression implements Expression {
     }
 
     @Override
-    public ExpressionResult evaluate() {
-        ExpressionResult leftResult = left.evaluate();
+    public ExpressionResult evaluate(EvaluationMode mode) {
+        ExpressionResult leftResult = left.evaluate(mode);
 
         // Short-circuit
-        if (leftResult.getStatus() == PASS) {
-            return PASS_RESULT;
+        if (leftResult == PASS) {
+            return PASS;
         }
 
-        ExpressionResult rightResult = (right == null) ? leftResult : right.evaluate();
+        ExpressionResult rightResult = (right == null) ? leftResult : right.evaluate(mode);
 
-        if (leftResult.getStatus() == FAIL && rightResult.getStatus() == FAIL) {
+        if (leftResult == FAIL && rightResult == FAIL) {
             return leftResult;
         }
 
-        if (rightResult.getStatus() == PASS) {
-            return PASS_RESULT;
+        if (rightResult == PASS) {
+            return PASS;
         }
 
-        return DEFERRED_RESULT;
+        return DEFERRED;
     }
 
     @Override
     public String toString() {
-        return "(" + left + ") OR (" + right + ")";
+        if (right == null || right.equals(Results.FAILURE)) {
+            return String.format("%s", left);
+        }
+        return String.format("(%s) OR (%s)", left, right);
     }
 }

@@ -5,10 +5,15 @@
  */
 package com.yahoo.elide.jsonapi;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.google.common.collect.Sets;
+import static org.mockito.Mockito.mock;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNull;
+import static org.testng.Assert.assertTrue;
+
+import com.yahoo.elide.ElideSettingsBuilder;
 import com.yahoo.elide.audit.AuditLogger;
 import com.yahoo.elide.audit.TestAuditLogger;
+import com.yahoo.elide.core.DataStoreTransaction;
 import com.yahoo.elide.core.EntityDictionary;
 import com.yahoo.elide.core.PersistentResource;
 import com.yahoo.elide.core.RequestScope;
@@ -18,22 +23,24 @@ import com.yahoo.elide.jsonapi.models.Relationship;
 import com.yahoo.elide.jsonapi.models.Resource;
 import com.yahoo.elide.jsonapi.models.ResourceIdentifier;
 import com.yahoo.elide.security.User;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.google.common.collect.Sets;
+
 import example.Child;
 import example.Parent;
+import example.TestCheckMappings;
+
+import org.mockito.Answers;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.assertTrue;
 
 /**
  * JSON API testing.
@@ -43,13 +50,19 @@ public class JsonApiTest {
     private JsonApiMapper mapper;
     @BeforeTest
     void init() {
-        EntityDictionary dictionary = new EntityDictionary(new HashMap<>());
+        EntityDictionary dictionary = new EntityDictionary(TestCheckMappings.MAPPINGS);
         dictionary.bindEntity(Parent.class);
         dictionary.bindEntity(Child.class);
         dictionary.bindInitializer(Parent::doInit, Parent.class);
         mapper = new JsonApiMapper(dictionary);
         AuditLogger testLogger = new TestAuditLogger();
-        userScope = new RequestScope(new JsonApiDocument(), null, new User(0), dictionary, mapper, testLogger);
+        userScope = new RequestScope(null, new JsonApiDocument(),
+                mock(DataStoreTransaction.class, Answers.CALLS_REAL_METHODS), new User(0), null,
+                new ElideSettingsBuilder(null)
+                        .withJsonApiMapper(mapper)
+                        .withAuditLogger(testLogger)
+                        .withEntityDictionary(dictionary)
+                        .build(), false);
     }
 
     @Test
@@ -60,7 +73,7 @@ public class JsonApiTest {
         parent.setChildren(Sets.newHashSet());
         parent.setSpouses(Sets.newHashSet());
 
-        new PersistentResource<>(parent, userScope).toResource();
+        new PersistentResource<>(parent, null, userScope.getUUIDFor(parent), userScope).toResource();
 
         assertTrue(parent.init);
     }
@@ -71,7 +84,7 @@ public class JsonApiTest {
         parent.setId(123L);
 
         JsonApiDocument jsonApiDocument = new JsonApiDocument();
-        jsonApiDocument.setData(new Data<>(new PersistentResource<>(parent, userScope).toResource()));
+        jsonApiDocument.setData(new Data<>(new PersistentResource<>(parent, null, userScope.getUUIDFor(parent), userScope).toResource()));
 
         String expected = "{\"data\":{\"type\":\"parent\",\"id\":\"123\",\"attributes\":{\"firstName\":null},\"relationships\":{\"children\":{\"data\":[]},\"spouses\":{\"data\":[]}}}}";
 
@@ -91,7 +104,7 @@ public class JsonApiTest {
         child.setFriends(new HashSet<>());
 
         JsonApiDocument jsonApiDocument = new JsonApiDocument();
-        jsonApiDocument.setData(new Data<>(new PersistentResource<>(parent, userScope).toResource()));
+        jsonApiDocument.setData(new Data<>(new PersistentResource<>(parent, null, userScope.getUUIDFor(parent), userScope).toResource()));
 
         String expected = "{\"data\":{\"type\":\"parent\",\"id\":\"123\",\"attributes\":{\"firstName\":\"bob\"},\"relationships\":{\"children\":{\"data\":[{\"type\":\"child\",\"id\":\"2\"}]},\"spouses\":{\"data\":[]}}}}";
 
@@ -110,11 +123,11 @@ public class JsonApiTest {
         child.setParents(Collections.singleton(parent));
         child.setFriends(new HashSet<>());
 
-        PersistentResource<Parent> pRec = new PersistentResource<>(parent, userScope);
+        PersistentResource<Parent> pRec = new PersistentResource<>(parent, null, userScope.getUUIDFor(parent), userScope);
 
         JsonApiDocument jsonApiDocument = new JsonApiDocument();
         jsonApiDocument.setData(new Data<>(pRec.toResource()));
-        jsonApiDocument.addIncluded(new PersistentResource<>(pRec, child, userScope).toResource());
+        jsonApiDocument.addIncluded(new PersistentResource<>(child, pRec, userScope.getUUIDFor(child), userScope).toResource());
 
         String expected = "{\"data\":{\"type\":\"parent\",\"id\":\"123\",\"attributes\":{\"firstName\":\"bob\"},\"relationships\":{\"children\":{\"data\":[{\"type\":\"child\",\"id\":\"2\"}]},\"spouses\":{\"data\":[]}}},\"included\":[{\"type\":\"child\",\"id\":\"2\",\"attributes\":{\"name\":null},\"relationships\":{\"friends\":{\"data\":[]},\"parents\":{\"data\":[{\"type\":\"parent\",\"id\":\"123\"}]}}}]}";
 
@@ -136,7 +149,7 @@ public class JsonApiTest {
 
         JsonApiDocument jsonApiDocument = new JsonApiDocument();
         jsonApiDocument.setData(
-            new Data<>(Collections.singletonList(new PersistentResource<>(parent, userScope).toResource())));
+            new Data<>(Collections.singletonList(new PersistentResource<>(parent, null, userScope.getUUIDFor(parent), userScope).toResource())));
 
         String expected = "{\"data\":[{\"type\":\"parent\",\"id\":\"123\",\"attributes\":{\"firstName\":\"bob\"},\"relationships\":{\"children\":{\"data\":[{\"type\":\"child\",\"id\":\"2\"}]},\"spouses\":{\"data\":[]}}}]}";
 
@@ -155,13 +168,13 @@ public class JsonApiTest {
         parent.setFirstName("bob");
         child.setFriends(new HashSet<>());
 
-        PersistentResource<Parent> pRec = new PersistentResource<>(parent, userScope);
+        PersistentResource<Parent> pRec = new PersistentResource<>(parent, null, userScope.getUUIDFor(parent), userScope);
 
         JsonApiDocument jsonApiDocument = new JsonApiDocument();
         jsonApiDocument.setData(new Data<>(Collections.singletonList(pRec.toResource())));
-        jsonApiDocument.addIncluded(new PersistentResource<>(pRec, child, userScope).toResource());
+        jsonApiDocument.addIncluded(new PersistentResource<>(child, pRec, userScope.getUUIDFor(child), userScope).toResource());
         // duplicate will be ignored
-        jsonApiDocument.addIncluded(new PersistentResource<>(pRec, child, userScope).toResource());
+        jsonApiDocument.addIncluded(new PersistentResource<>(child, pRec, userScope.getUUIDFor(child), userScope).toResource());
 
         String expected = "{\"data\":[{\"type\":\"parent\",\"id\":\"123\",\"attributes\":{\"firstName\":\"bob\"},\"relationships\":{\"children\":{\"data\":[{\"type\":\"child\",\"id\":\"2\"}]},\"spouses\":{\"data\":[]}}}],\"included\":[{\"type\":\"child\",\"id\":\"2\",\"attributes\":{\"name\":null},\"relationships\":{\"friends\":{\"data\":[]},\"parents\":{\"data\":[{\"type\":\"parent\",\"id\":\"123\"}]}}}]}";
 
@@ -225,8 +238,8 @@ public class JsonApiTest {
         List<Resource> included = jsonApiDocument.getIncluded();
         Resource includedChild = included.iterator().next();
         ResourceIdentifier parent = includedChild.getRelationships()
-                                                 .get("parents")
-                                                 .getResourceIdentifierData().getSingleValue();
+                .get("parents")
+                .getResourceIdentifierData().getSingleValue();
 
         assertEquals(data.getType(), "parent");
         assertEquals(data.getId(), "123");

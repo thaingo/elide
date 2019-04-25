@@ -5,30 +5,39 @@
  */
 package com.yahoo.elide.core;
 
+import static com.yahoo.elide.core.EntityBinding.EMPTY_BINDING;
+
+import com.yahoo.elide.Injector;
 import com.yahoo.elide.annotation.ComputedAttribute;
+import com.yahoo.elide.annotation.ComputedRelationship;
 import com.yahoo.elide.annotation.Exclude;
 import com.yahoo.elide.annotation.Include;
+import com.yahoo.elide.annotation.MappedInterface;
 import com.yahoo.elide.annotation.SharePermission;
 import com.yahoo.elide.core.exceptions.DuplicateMappingException;
+import com.yahoo.elide.functions.LifeCycleHook;
 import com.yahoo.elide.security.checks.Check;
 import com.yahoo.elide.security.checks.prefab.Collections.AppendOnly;
 import com.yahoo.elide.security.checks.prefab.Collections.RemoveOnly;
 import com.yahoo.elide.security.checks.prefab.Common;
 import com.yahoo.elide.security.checks.prefab.Role;
-import lombok.extern.slf4j.Slf4j;
-import org.antlr.v4.runtime.tree.ParseTree;
-import org.apache.commons.lang3.text.WordUtils;
 
-import javax.persistence.Entity;
-import javax.persistence.Transient;
+import com.google.common.collect.BiMap;
+import com.google.common.collect.HashBiMap;
+import com.google.common.collect.Maps;
+
+import org.antlr.v4.runtime.tree.ParseTree;
+import org.apache.commons.lang3.StringUtils;
+
+import lombok.extern.slf4j.Slf4j;
+
 import java.lang.annotation.Annotation;
 import java.lang.reflect.AccessibleObject;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -36,9 +45,18 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import javax.persistence.AccessType;
+import javax.persistence.CascadeType;
+import javax.persistence.Entity;
+import javax.persistence.Transient;
 
 /**
  * Entity Dictionary maps JSON API Entity beans to/from Entity type names.
@@ -52,16 +70,11 @@ public class EntityDictionary {
     protected final ConcurrentHashMap<String, Class<?>> bindJsonApiToEntity = new ConcurrentHashMap<>();
     protected final ConcurrentHashMap<Class<?>, EntityBinding> entityBindings = new ConcurrentHashMap<>();
     protected final CopyOnWriteArrayList<Class<?>> bindEntityRoots = new CopyOnWriteArrayList<>();
-    protected final ConcurrentHashMap<String, Class<? extends Check>> checkNames;
+    protected final ConcurrentHashMap<Class<?>, List<Class<?>>> subclassingEntities = new ConcurrentHashMap<>();
+    protected final BiMap<String, Class<? extends Check>> checkNames;
+    protected final Injector injector;
 
-    /**
-     * Instantiates a new Entity dictionary.
-     * @deprecated As of 2.2, {@link #EntityDictionary(Map)} is preferred.
-     */
-    @Deprecated
-    public EntityDictionary() {
-        this(new ConcurrentHashMap<>());
-    }
+    private final static ConcurrentHashMap<Class, String> SIMPLE_NAMES = new ConcurrentHashMap<>();
 
     /**
      * Instantiate a new EntityDictionary with the provided set of checks. In addition all of the checks
@@ -72,22 +85,57 @@ public class EntityDictionary {
      *               to their implementing classes
      */
     public EntityDictionary(Map<String, Class<? extends Check>> checks) {
-        checkNames = new ConcurrentHashMap<>(checks);
-        addPrefabChecks();
+        this(checks, null);
     }
 
-    private void addPrefabChecks() {
-        checkNames.putIfAbsent("Prefab.Role.All", Role.ALL.class);
-        checkNames.putIfAbsent("Prefab.Role.None", Role.NONE.class);
-        checkNames.putIfAbsent("Prefab.Collections.AppendOnly", AppendOnly.class);
-        checkNames.putIfAbsent("Prefab.Collections.RemoveOnly", RemoveOnly.class);
-        checkNames.putIfAbsent("Prefab.Common.UpdateOnCreate", Common.UpdateOnCreate.class);
+    /**
+     * Instantiate a new EntityDictionary with the provided set of checks and an injection function.
+     * In addition all of the checks * in {@link com.yahoo.elide.security.checks.prefab} are mapped
+     * to {@code Prefab.CONTAINER.CHECK} * (e.g. {@code @ReadPermission(expression="Prefab.Role.All")}
+     * or {@code @ReadPermission(expression="Prefab.Common.UpdateOnCreate")})
+     * @param checks a map that links the identifiers used in the permission expression strings
+     *               to their implementing classes
+     * @param injector a function typically associated with a dependency injection framework that will
+     *                 initialize Elide models.
+     */
+    public EntityDictionary(Map<String, Class<? extends Check>> checks, Injector injector) {
+        checkNames = Maps.synchronizedBiMap(HashBiMap.create(checks));
+
+        addPrefabCheck("Prefab.Role.All", Role.ALL.class);
+        addPrefabCheck("Prefab.Role.None", Role.NONE.class);
+        addPrefabCheck("Prefab.Collections.AppendOnly", AppendOnly.class);
+        addPrefabCheck("Prefab.Collections.RemoveOnly", RemoveOnly.class);
+        addPrefabCheck("Prefab.Common.UpdateOnCreate", Common.UpdateOnCreate.class);
+
+        this.injector = injector;
+    }
+
+    private void addPrefabCheck(String alias, Class<? extends Check> checkClass) {
+        if (checkNames.containsKey(alias) || checkNames.inverse().containsKey(checkClass)) {
+            return;
+        }
+
+        checkNames.put(alias, checkClass);
     }
 
     private static Package getParentPackage(Package pkg) {
         String name = pkg.getName();
         int idx = name.lastIndexOf('.');
         return idx == -1 ? null : Package.getPackage(name.substring(0, idx));
+    }
+
+    /**
+     * Cache the simple name of the provided class.
+     * @param cls the {@code Class} object to be checked
+     * @return simple name
+     */
+    public static String getSimpleName(Class<?> cls) {
+        String simpleName = SIMPLE_NAMES.get(cls);
+        if (simpleName == null) {
+            simpleName = cls.getSimpleName();
+            SIMPLE_NAMES.putIfAbsent(cls, simpleName);
+        }
+        return simpleName;
     }
 
     /**
@@ -104,14 +152,25 @@ public class EntityDictionary {
         Method m = entityClass.getMethod(name, paramClass);
         int modifiers = m.getModifiers();
         if (Modifier.isAbstract(modifiers)
-                || (m.isAnnotationPresent(Transient.class) && !m.isAnnotationPresent(ComputedAttribute.class))) {
+                || m.isAnnotationPresent(Transient.class)
+                && !m.isAnnotationPresent(ComputedAttribute.class)
+                && !m.isAnnotationPresent(ComputedRelationship.class)) {
             throw new NoSuchMethodException(name);
         }
         return m;
     }
 
     protected EntityBinding getEntityBinding(Class<?> entityClass) {
-        return entityBindings.getOrDefault(lookupEntityClass(entityClass), EntityBinding.EMPTY_BINDING);
+        return entityBindings.computeIfAbsent(entityClass, cls -> {
+            if (isMappedInterface(cls)) {
+                return EMPTY_BINDING;
+            }
+            return entityBindings.getOrDefault(lookupEntityClass(cls), EMPTY_BINDING);
+        });
+    }
+
+    public boolean isMappedInterface(Class<?> interfaceClass) {
+        return interfaceClass.isInterface() && interfaceClass.isAnnotationPresent(MappedInterface.class);
     }
 
     /**
@@ -125,13 +184,25 @@ public class EntityDictionary {
     }
 
     /**
-     * Returns the entity name for a given binding class.
+     * Returns the Include name for a given binding class.
      *
      * @param entityClass the entity class
      * @return binding class
+     * @see Include
      */
     public String getJsonAliasFor(Class<?> entityClass) {
         return getEntityBinding(entityClass).jsonApiType;
+    }
+
+    /**
+     * Returns the Entity name for a given binding class.
+     *
+     * @param entityClass the entity class
+     * @return binding class
+     * @see Entity
+     */
+    public String getEntityFor(Class<?> entityClass) {
+        return getEntityBinding(entityClass).entityName;
     }
 
     /**
@@ -154,8 +225,7 @@ public class EntityDictionary {
      * @return a {@code ParseTree} expressing the permissions, if one exists
      *         or {@code null} if the permission is not specified at a class level
      */
-    public ParseTree getPermissionsForClass(Class<?> resourceClass,
-                                                       Class<? extends Annotation> annotationClass) {
+    public ParseTree getPermissionsForClass(Class<?> resourceClass, Class<? extends Annotation> annotationClass) {
         EntityBinding binding = getEntityBinding(resourceClass);
         return binding.entityPermissions.getClassChecksForPermission(annotationClass);
     }
@@ -170,8 +240,8 @@ public class EntityDictionary {
      *         or {@code null} if the permission is not specified on that field
      */
     public ParseTree getPermissionsForField(Class<?> resourceClass,
-                                                       String field,
-                                                       Class<? extends Annotation> annotationClass) {
+            String field,
+            Class<? extends Annotation> annotationClass) {
         EntityBinding binding = getEntityBinding(resourceClass);
         return binding.entityPermissions.getFieldChecksForPermission(field, annotationClass);
     }
@@ -187,8 +257,13 @@ public class EntityDictionary {
 
         if (checkCls == null) {
             try {
-                checkCls = (Class<? extends Check>) Class.forName(checkIdentifier);
-                checkNames.putIfAbsent(checkIdentifier, checkCls);
+                checkCls = Class.forName(checkIdentifier).asSubclass(Check.class);
+                try {
+                    checkNames.putIfAbsent(checkIdentifier, checkCls);
+                } catch (IllegalArgumentException e) {
+                    log.error("HELP! {} {} {}", checkIdentifier, checkCls, checkNames.inverse().get(checkCls));
+                    throw e;
+                }
             } catch (ClassNotFoundException | ClassCastException e) {
                 throw new IllegalArgumentException(
                         "Could not instantiate specified check '" + checkIdentifier + "'.", e);
@@ -199,6 +274,115 @@ public class EntityDictionary {
     }
 
     /**
+     * Get inherited entity names for a particular entity.
+     *
+     * @param entityName Json alias name for entity
+     * @return  List of all inherited entity type names
+     */
+    public List<String> getSubclassingEntityNames(String entityName) {
+        return getSubclassingEntityNames(getEntityClass(entityName));
+    }
+
+    /**
+     * Get inherited entity names for a particular entity.
+     *
+     * @param entityClass Entity class
+     * @return  List of all inherited entity type names
+     */
+    public List<String> getSubclassingEntityNames(Class entityClass) {
+        List<Class<?>> entities = getSubclassingEntities(entityClass);
+        return entities.stream().map(this::getJsonAliasFor).collect(Collectors.toList());
+    }
+
+    /**
+     * Get a list of inherited entities from a particular entity.
+     * Namely, the list of entities inheriting from the provided class.
+     *
+     * @param entityName Json alias name for entity
+     * @return  List of all inherited entity types
+     */
+    public List<Class<?>> getSubclassingEntities(String entityName) {
+        return getSubclassingEntities(getEntityClass(entityName));
+    }
+
+    /**
+     * Get a list of inherited entities from a particular entity.
+     * Namely, the list of entities inheriting from the provided class.
+     *
+     * @param entityClass Entity class
+     * @return  List of all inherited entity types
+     */
+    public List<Class<?>> getSubclassingEntities(Class entityClass) {
+        return subclassingEntities.computeIfAbsent(entityClass, (unused) -> {
+            return entityBindings.keySet().stream()
+                    .filter(c -> c != entityClass && entityClass.isAssignableFrom(c))
+                    .collect(Collectors.toList());
+        });
+    }
+
+    /**
+     * Fetch all entity names that the provided entity inherits from (i.e. all superclass entities down to,
+     * but excluding Object).
+     *
+     * @param entityName Json alias name for entity
+     * @return  List of all super class entity json names
+     */
+    public List<String> getSuperClassEntityNames(String entityName) {
+        return getSuperClassEntityNames(getEntityClass(entityName));
+    }
+
+    /**
+     * Fetch all entity names that the provided entity inherits from (i.e. all superclass entities down to,
+     * but excluding Object).
+     *
+     * @param entityClass Entity class
+     * @return  List of all super class entity json names
+     */
+    public List<String> getSuperClassEntityNames(Class entityClass) {
+        return getSuperClassEntities(entityClass).stream()
+                .map(this::getJsonAliasFor)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Fetch all entity classes that the provided entity inherits from (i.e. all superclass entities down to,
+     * but excluding Object).
+     *
+     * @param entityName Json alias name for entity
+     * @return  List of all super class entity classes
+     */
+    public List<Class<?>> getSuperClassEntities(String entityName) {
+        return getSuperClassEntities(getEntityClass(entityName));
+    }
+
+    /**
+     * Fetch all entity classes that provided entity inherits from (i.e. all superclass entities down to,
+     * but excluding Object).
+     *
+     * @param entityClass Entity class
+     * @return  List of all super class entity classes
+     */
+    public List<Class<?>> getSuperClassEntities(Class entityClass) {
+        return getEntityBinding(entityClass).inheritedTypes.stream()
+                .filter(entityBindings::containsKey)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Returns the friendly named mapped to this given check.
+     * @param checkClass The class to lookup
+     * @return the friendly name of the check.
+     */
+    public String getCheckIdentifier(Class<? extends Check> checkClass) {
+        String identifier = checkNames.inverse().get(checkClass);
+
+        if (identifier == null) {
+            return checkClass.getName();
+        }
+        return identifier;
+    }
+
+    /**
      * Returns the name of the id field.
      *
      * @param entityClass Entity class
@@ -206,6 +390,15 @@ public class EntityDictionary {
      */
     public String getIdFieldName(Class<?> entityClass) {
         return getEntityBinding(entityClass).getIdFieldName();
+    }
+
+    /**
+     * Returns whether the entire entity uses Field or Property level access.
+     * @param entityClass Entity Class
+     * @return The JPA Access Type
+     */
+    public AccessType getAccessType(Class<?> entityClass) {
+        return getEntityBinding(entityClass).getAccessType();
     }
 
     /**
@@ -263,6 +456,50 @@ public class EntityDictionary {
      */
     public List<String> getRelationships(Object entity) {
         return getRelationships(entity.getClass());
+    }
+
+    /**
+     * Get a list of elide-bound relationships.
+     *
+     * @param entityClass Entity class to find relationships for
+     * @return List of elide-bound relationship names.
+     */
+    public List<String> getElideBoundRelationships(Class<?> entityClass) {
+        return getRelationships(entityClass).stream()
+                .filter(relationName -> getBindings().contains(getParameterizedType(entityClass, relationName)))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Get a list of elide-bound relationships.
+     *
+     * @param entity Entity instance to find relationships for
+     * @return List of elide-bound relationship names.
+     */
+    public List<String> getElideBoundRelationships(Object entity) {
+        return getElideBoundRelationships(entity.getClass());
+    }
+
+    /**
+     * Determine whether or not a method is request scopeable.
+     *
+     * @param entity  Entity instance
+     * @param method  Method on entity to check
+     * @return True if method accepts a RequestScope, false otherwise.
+     */
+    public boolean isMethodRequestScopeable(Object entity, Method method) {
+        return isMethodRequestScopeable(entity.getClass(), method);
+    }
+
+    /**
+     * Determine whether or not a method is request scopeable.
+     *
+     * @param entityClass  Entity to check
+     * @param method  Method on entity to check
+     * @return True if method accepts a RequestScope, false otherwise.
+     */
+    public boolean isMethodRequestScopeable(Class<?> entityClass, Method method) {
+        return getEntityBinding(entityClass).requestScopeableMethods.getOrDefault(method, false);
     }
 
     /**
@@ -327,7 +564,7 @@ public class EntityDictionary {
         if (mappings != null) {
             final String mapping = mappings.get(relation);
 
-            if (mapping != null && !mapping.equals("")) {
+            if (mapping != null && !"".equals(mapping)) {
                 return mapping;
             }
         }
@@ -416,19 +653,7 @@ public class EntityDictionary {
             return null;
         }
 
-        Type type;
-
-        if (fieldOrMethod instanceof Method) {
-            type = ((Method) fieldOrMethod).getGenericReturnType();
-        } else {
-            type = ((Field) fieldOrMethod).getGenericType();
-        }
-
-        if (type instanceof ParameterizedType) {
-            return (Class<?>) ((ParameterizedType) type).getActualTypeArguments()[paramIndex];
-        }
-
-        return getType(entityClass, identifier);
+        return EntityBinding.getFieldType(entityClass, fieldOrMethod, Optional.of(paramIndex));
     }
 
     /**
@@ -492,6 +717,8 @@ public class EntityDictionary {
             Initializer<T> initializer = getEntityBinding(entity.getClass()).getInitializer();
             if (initializer != null) {
                 initializer.initialize(entity);
+            } else if (injector != null) {
+                injector.inject(entity);
             }
         }
     }
@@ -504,6 +731,7 @@ public class EntityDictionary {
      * @param cls         Class to bind initialization
      */
     public <T> void bindInitializer(Initializer<T> initializer, Class<T> cls) {
+        bindIfUnbound(cls);
         getEntityBinding(cls).setInitializer(initializer);
     }
 
@@ -514,7 +742,8 @@ public class EntityDictionary {
      * @return true if entityClass is shareable.  False otherwise.
      */
     public boolean isShareable(Class<?> entityClass) {
-        return getAnnotation(entityClass, SharePermission.class) != null;
+        return getAnnotation(entityClass, SharePermission.class) != null
+                && getAnnotation(entityClass, SharePermission.class).sharable();
     }
 
     /**
@@ -523,9 +752,15 @@ public class EntityDictionary {
      * @param cls Entity bean class
      */
     public void bindEntity(Class<?> cls) {
+        if (entityBindings.getOrDefault(lookupEntityClass(cls), EMPTY_BINDING) != EMPTY_BINDING) {
+            return;
+        }
+        entityBindings.remove(lookupEntityClass(cls));
+
         Annotation annotation = getFirstAnnotation(cls, Arrays.asList(Include.class, Exclude.class));
         Include include = annotation instanceof Include ? (Include) annotation : null;
         Exclude exclude = annotation instanceof Exclude ? (Exclude) annotation : null;
+        Entity entity = (Entity) getFirstAnnotation(cls, Arrays.asList(Entity.class));
 
         if (exclude != null) {
             log.trace("Exclude {}", cls.getName());
@@ -537,9 +772,16 @@ public class EntityDictionary {
             return;
         }
 
+        String name;
+        if (entity == null || "".equals(entity.name())) {
+            name = StringUtils.uncapitalize(cls.getSimpleName());
+        } else {
+            name = entity.name();
+        }
+
         String type;
         if ("".equals(include.type())) {
-            type = WordUtils.uncapitalize(cls.getSimpleName());
+            type = name;
         } else {
             type = include.type();
         }
@@ -550,7 +792,7 @@ public class EntityDictionary {
             throw new DuplicateMappingException(type + " " + cls.getName() + ":" + duplicate.getName());
         }
 
-        entityBindings.putIfAbsent(lookupEntityClass(cls), new EntityBinding(cls, type));
+        entityBindings.putIfAbsent(lookupEntityClass(cls), new EntityBinding(this, cls, type, name));
         if (include.rootLevel()) {
             bindEntityRoots.add(cls);
         }
@@ -580,10 +822,15 @@ public class EntityDictionary {
         return getEntityBinding(recordClass).getAnnotation(annotationClass);
     }
 
-    public <A extends Annotation> Collection<Method> getTriggers(Class<?> cls,
-                                                                 Class<A> annotationClass,
-                                                                 String fieldName) {
+    public <A extends Annotation> Collection<LifeCycleHook> getTriggers(Class<?> cls,
+                                                                        Class<A> annotationClass,
+                                                                        String fieldName) {
         return getEntityBinding(cls).getTriggers(annotationClass, fieldName);
+    }
+
+    public <A extends Annotation> Collection<LifeCycleHook> getTriggers(Class<?> cls,
+                                                                        Class<A> annotationClass) {
+        return getEntityBinding(cls).getTriggers(annotationClass);
     }
 
     /**
@@ -746,6 +993,17 @@ public class EntityDictionary {
         return getAccessibleObject(target.getClass(), fieldName);
     }
 
+    public boolean isComputed(Class<?> entityClass, String fieldName) {
+        AccessibleObject fieldOrMethod = getAccessibleObject(entityClass, fieldName);
+
+        if (fieldOrMethod == null) {
+            return false;
+        }
+
+        return (fieldOrMethod.isAnnotationPresent(ComputedAttribute.class)
+                || fieldOrMethod.isAnnotationPresent(ComputedRelationship.class));
+    }
+
     /**
      * Retrieve the accessible object for a field.
      *
@@ -754,8 +1012,7 @@ public class EntityDictionary {
      * @return the value
      */
     public AccessibleObject getAccessibleObject(Class<?> targetClass, String fieldName) {
-        ConcurrentHashMap<String, AccessibleObject> map = getEntityBinding(targetClass).accessibleObject;
-        return map.get(fieldName);
+        return getEntityBinding(targetClass).fieldsToValues.get(fieldName);
     }
 
     /**
@@ -773,5 +1030,140 @@ public class EntityDictionary {
             }
         }
         return fields;
+    }
+
+    public boolean isRelation(Class<?> entityClass, String relationName) {
+        return getEntityBinding(entityClass).relationships.contains(relationName);
+    }
+
+    public boolean isAttribute(Class<?> entityClass, String attributeName) {
+        return getEntityBinding(entityClass).attributes.contains(attributeName);
+    }
+
+    /**
+     * Binds a lifecycle hook to a particular field or method in an entity.  The hook will be called a
+     * single time per request per field READ, CREATE, or UPDATE.
+     * @param entityClass The entity that triggers the lifecycle hook.
+     * @param annotationClass (OnReadPostCommit, OnUpdatePreSecurity, etc)
+     * @param fieldOrMethodName The name of the field or method
+     * @param callback The callback function to invoke.
+     */
+    public void bindTrigger(Class<?> entityClass,
+                            Class<? extends Annotation> annotationClass,
+                            String fieldOrMethodName,
+                            LifeCycleHook callback) {
+
+        bindIfUnbound(entityClass);
+        getEntityBinding(entityClass).bindTrigger(annotationClass, fieldOrMethodName, callback);
+    }
+
+    /**
+     * Binds a lifecycle hook to a particular entity class.  The hook will either be called:
+     *  - A single time single time per request per class READ, CREATE, UPDATE, or DELETE.
+     *  - Multiple times per request per field READ, CREATE, or UPDATE.
+     *
+     * The behavior is determined by the value of the {@code allowMultipleInvocations} flag.
+     * @param entityClass The entity that triggers the lifecycle hook.
+     * @param annotationClass (OnReadPostCommit, OnUpdatePreSecurity, etc)
+     * @param callback The callback function to invoke.
+     * @param allowMultipleInvocations Should the same life cycle hook be invoked multiple times for multiple
+     *                              CRUD actions on the same model.
+     */
+    public void bindTrigger(Class<?> entityClass,
+                            Class<? extends Annotation> annotationClass,
+                            LifeCycleHook callback,
+                            boolean allowMultipleInvocations) {
+        bindIfUnbound(entityClass);
+        if (allowMultipleInvocations) {
+            getEntityBinding(entityClass).bindTrigger(annotationClass, callback);
+        } else {
+            getEntityBinding(entityClass).bindTrigger(annotationClass, PersistentResource.CLASS_NO_FIELD, callback);
+        }
+    }
+
+    /**
+     * Binds a lifecycle hook to a particular entity class.   The hook will be called a single time per request
+     * per class READ, CREATE, UPDATE, or DELETE.
+     * @param entityClass The entity that triggers the lifecycle hook.
+     * @param annotationClass (OnReadPostCommit, OnUpdatePreSecurity, etc)
+     * @param callback The callback function to invoke.
+     */
+    public void bindTrigger(Class<?> entityClass,
+                            Class<? extends Annotation> annotationClass,
+                            LifeCycleHook callback) {
+        bindTrigger(entityClass, annotationClass, callback, false);
+    }
+
+
+    /**
+     * Returns true if the relationship cascades deletes and false otherwise.
+     * @param targetClass The class which owns the relationship.
+     * @param fieldName The relationship
+     * @return true or false
+     */
+    public boolean cascadeDeletes(Class<?> targetClass, String fieldName) {
+        CascadeType [] cascadeTypes =
+                getEntityBinding(targetClass).relationshipToCascadeTypes.getOrDefault(fieldName, new CascadeType[0]);
+
+        for (CascadeType cascadeType : cascadeTypes) {
+            if (cascadeType == CascadeType.ALL || cascadeType == CascadeType.REMOVE) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Walks the entity graph and performs a transform function on each element.
+     * @param entities The roots of the entity graph.
+     * @param transform The function to transform each entity class into a result.
+     * @param <T> The result type.
+     * @return The collection of results.
+     */
+    public <T> List<T> walkEntityGraph(Set<Class<?>> entities,  Function<Class<?>, T> transform) {
+        ArrayList<T> results = new ArrayList<>();
+        Queue<Class<?>> toVisit = new ArrayDeque<>(entities);
+        Set<Class<?>> visited = new HashSet<>();
+        while (! toVisit.isEmpty()) {
+            Class<?> clazz = toVisit.remove();
+            results.add(transform.apply(clazz));
+            visited.add(clazz);
+
+            for (String relationship : getElideBoundRelationships(clazz)) {
+                Class<?> relationshipClass = getParameterizedType(clazz, relationship);
+
+                try {
+                    lookupEntityClass(relationshipClass);
+                } catch (IllegalArgumentException e) {
+
+                    /* The relationship hasn't been bound */
+                    continue;
+                }
+
+                if (!visited.contains(relationshipClass)) {
+                    toVisit.add(relationshipClass);
+                }
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Returns whether or not a class is already bound.
+     * @param cls
+     * @return true if the class is bound.  False otherwise.
+     */
+    public boolean hasBinding(Class<?> cls) {
+        return bindJsonApiToEntity.contains(cls);
+    }
+
+    /**
+     * Binds the entity class if not yet bound.
+     * @param entityClass the class to bind.
+     */
+    private void bindIfUnbound(Class<?> entityClass) {
+        if (! entityBindings.containsKey(lookupEntityClass(entityClass))) {
+            bindEntity(entityClass);
+        }
     }
 }

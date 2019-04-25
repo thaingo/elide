@@ -7,30 +7,16 @@ package example;
 
 import com.yahoo.elide.annotation.Include;
 import com.yahoo.elide.annotation.SharePermission;
-import com.yahoo.elide.security.checks.prefab.Role;
 
 import javax.persistence.Entity;
 import javax.persistence.FetchType;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
-import javax.persistence.Id;
 import javax.persistence.OneToOne;
 
 @Entity
 @Include(rootLevel = true, type = "noShareBid")
-@SharePermission(all = {Role.NONE.class})
-public class NoShareBiDirectional {
-    private Long id;
+@SharePermission(sharable = false)
+public class NoShareBiDirectional extends BaseId {
     private NoShareBiDirectional other;
-
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    public Long getId() {
-        return id;
-    }
-
-    public void setId(Long id) {
-        this.id = id;
-    }
 
     @OneToOne(fetch = FetchType.LAZY)
     public NoShareBiDirectional getOther() {

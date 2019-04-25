@@ -5,32 +5,53 @@
  */
 package com.yahoo.elide.core;
 
-import com.yahoo.elide.annotation.OnCommit;
+import com.yahoo.elide.ElideSettings;
+import com.yahoo.elide.annotation.OnCreatePostCommit;
+import com.yahoo.elide.annotation.OnCreatePreCommit;
+import com.yahoo.elide.annotation.OnCreatePreSecurity;
+import com.yahoo.elide.annotation.OnDeletePostCommit;
+import com.yahoo.elide.annotation.OnDeletePreCommit;
+import com.yahoo.elide.annotation.OnDeletePreSecurity;
+import com.yahoo.elide.annotation.OnReadPostCommit;
+import com.yahoo.elide.annotation.OnReadPreCommit;
+import com.yahoo.elide.annotation.OnReadPreSecurity;
+import com.yahoo.elide.annotation.OnUpdatePostCommit;
+import com.yahoo.elide.annotation.OnUpdatePreCommit;
+import com.yahoo.elide.annotation.OnUpdatePreSecurity;
 import com.yahoo.elide.audit.AuditLogger;
-import com.yahoo.elide.core.filter.Predicate;
+import com.yahoo.elide.core.exceptions.InvalidAttributeException;
+import com.yahoo.elide.core.exceptions.InvalidOperationException;
+import com.yahoo.elide.core.exceptions.InvalidPredicateException;
+import com.yahoo.elide.core.filter.dialect.MultipleFilterDialect;
+import com.yahoo.elide.core.filter.dialect.ParseException;
+import com.yahoo.elide.core.filter.expression.AndFilterExpression;
+import com.yahoo.elide.core.filter.expression.FilterExpression;
 import com.yahoo.elide.core.pagination.Pagination;
 import com.yahoo.elide.core.sort.Sorting;
 import com.yahoo.elide.jsonapi.JsonApiMapper;
 import com.yahoo.elide.jsonapi.models.JsonApiDocument;
+import com.yahoo.elide.security.ChangeSpec;
 import com.yahoo.elide.security.PermissionExecutor;
-import com.yahoo.elide.security.SecurityMode;
 import com.yahoo.elide.security.User;
-import com.yahoo.elide.security.checks.Check;
 import com.yahoo.elide.security.executors.ActivePermissionExecutor;
+
+import io.reactivex.Observable;
+import io.reactivex.subjects.PublishSubject;
+import io.reactivex.subjects.ReplaySubject;
 import lombok.Getter;
 
-import javax.ws.rs.core.MultivaluedMap;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.function.Supplier;
+
+import javax.ws.rs.core.MultivaluedHashMap;
+import javax.ws.rs.core.MultivaluedMap;
 
 /**
  * Request scope object for relaying request-related data to various subsystems.
@@ -44,52 +65,75 @@ public class RequestScope implements com.yahoo.elide.security.RequestScope {
     @Getter private final AuditLogger auditLogger;
     @Getter private final Optional<MultivaluedMap<String, String>> queryParams;
     @Getter private final Map<String, Set<String>> sparseFields;
-    @Getter private final Map<String, Set<Predicate>> predicates;
     @Getter private final Pagination pagination;
     @Getter private final Sorting sorting;
-    @Getter private final SecurityMode securityMode;
     @Getter private final PermissionExecutor permissionExecutor;
     @Getter private final ObjectEntityCache objectEntityCache;
     @Getter private final Set<PersistentResource> newPersistentResources;
-    @Getter private final List<Supplier<String>> failedAuthorizations;
     @Getter private final LinkedHashSet<PersistentResource> dirtyResources;
-    final private transient LinkedHashSet<Runnable> commitTriggers;
+    @Getter private final LinkedHashSet<PersistentResource> deletedResources;
+    @Getter private final String path;
+    @Getter private final ElideSettings elideSettings;
+    @Getter private final boolean useFilterExpressions;
+    @Getter private final int updateStatusCode;
+    @Getter private final boolean mutatingMultipleEntities;
+
+    @Getter private final MultipleFilterDialect filterDialect;
+    private final Map<String, FilterExpression> expressionsByType;
+
+    private PublishSubject<CRUDEvent> lifecycleEvents;
+    private Observable<CRUDEvent> distinctLifecycleEvents;
+    private ReplaySubject<CRUDEvent> queuedLifecycleEvents;
+
+    /* Used to filter across heterogeneous types during the first load */
+    private FilterExpression globalFilterExpression;
 
     /**
-     * Create a new RequestScope.
+     * Create a new RequestScope with specified update status code.
+     *
+     * @param path the URL path
      * @param jsonApiDocument the document for this request
      * @param transaction the transaction for this request
      * @param user the user making this request
-     * @param dictionary the entity dictionary
-     * @param mapper converts JsonApiDocuments to raw JSON
-     * @param auditLogger logger for this request
      * @param queryParams the query parameters
-     * @param securityMode the current security mode
-     * @param permissionExecutorGenerator the user-provided function that will generate a permissionExecutor
+     * @param elideSettings Elide settings object
+     * @param mutatesMultipleEntities Whether or not this request involves bulk edits to entities
+     *                                (patch extension or graphQL).
      */
-    public RequestScope(JsonApiDocument jsonApiDocument,
+    public RequestScope(String path,
+                        JsonApiDocument jsonApiDocument,
                         DataStoreTransaction transaction,
                         User user,
-                        EntityDictionary dictionary,
-                        JsonApiMapper mapper,
-                        AuditLogger auditLogger,
                         MultivaluedMap<String, String> queryParams,
-                        SecurityMode securityMode,
-                        Function<RequestScope, PermissionExecutor> permissionExecutorGenerator) {
+                        ElideSettings elideSettings,
+                        boolean mutatesMultipleEntities) {
+        this.lifecycleEvents = PublishSubject.create();
+        this.distinctLifecycleEvents = lifecycleEvents.distinct();
+        this.queuedLifecycleEvents = ReplaySubject.create();
+        this.distinctLifecycleEvents.subscribe(queuedLifecycleEvents);
+
+        this.path = path;
         this.jsonApiDocument = jsonApiDocument;
         this.transaction = transaction;
         this.user = user;
-        this.dictionary = dictionary;
-        this.mapper = mapper;
-        this.auditLogger = auditLogger;
-        this.securityMode = securityMode;
+        this.dictionary = elideSettings.getDictionary();
+        this.mapper = elideSettings.getMapper();
+        this.auditLogger = elideSettings.getAuditLogger();
+        this.filterDialect = new MultipleFilterDialect(elideSettings.getJoinFilterDialects(),
+                elideSettings.getSubqueryFilterDialects());
+        this.elideSettings = elideSettings;
+        this.useFilterExpressions = elideSettings.isUseFilterExpressions();
+        this.updateStatusCode = elideSettings.getUpdateStatusCode();
 
+        this.globalFilterExpression = null;
+        this.expressionsByType = new HashMap<>();
         this.objectEntityCache = new ObjectEntityCache();
         this.newPersistentResources = new LinkedHashSet<>();
-        this.failedAuthorizations = new ArrayList<>();
         this.dirtyResources = new LinkedHashSet<>();
-        this.commitTriggers = new LinkedHashSet<>();
+        this.deletedResources = new LinkedHashSet<>();
+        this.mutatingMultipleEntities = mutatesMultipleEntities;
 
+        Function<RequestScope, PermissionExecutor> permissionExecutorGenerator = elideSettings.getPermissionExecutor();
         this.permissionExecutor = (permissionExecutorGenerator == null)
                 ? new ActivePermissionExecutor(this)
                 : permissionExecutorGenerator.apply(this);
@@ -98,108 +142,64 @@ public class RequestScope implements com.yahoo.elide.security.RequestScope {
                 ? Optional.empty()
                 : Optional.of(queryParams);
 
+        registerPreSecurityObservers();
+
         if (this.queryParams.isPresent()) {
+
+            /* Extract any query param that starts with 'filter' */
+            MultivaluedMap<String, String> filterParams = getFilterParams(queryParams);
+
+            String errorMessage = "";
+            if (! filterParams.isEmpty()) {
+
+                /* First check to see if there is a global, cross-type filter */
+                try {
+                    globalFilterExpression = filterDialect.parseGlobalExpression(path, filterParams);
+                } catch (ParseException e) {
+                    errorMessage = e.getMessage();
+                }
+
+                /* Next check to see if there is are type specific filters */
+                try {
+                    expressionsByType.putAll(filterDialect.parseTypedExpression(path, filterParams));
+                } catch (ParseException e) {
+
+                    /* If neither dialect parsed, report the last error found */
+                    if (globalFilterExpression == null) {
+
+                        if (errorMessage.isEmpty()) {
+                            errorMessage = e.getMessage();
+                        } else if (! errorMessage.equals(e.getMessage())) {
+
+                            /* Combine the two different messages together */
+                            errorMessage = errorMessage + "\n" + e.getMessage();
+                        }
+
+                        throw new InvalidPredicateException(errorMessage);
+                    }
+                }
+            }
+
             this.sparseFields = parseSparseFields(queryParams);
-            this.predicates = Predicate.parseQueryParams(this.dictionary, queryParams);
             this.sorting = Sorting.parseQueryParams(queryParams);
-            this.pagination = Pagination.parseQueryParams(queryParams);
+            this.pagination = Pagination.parseQueryParams(queryParams, this.getElideSettings());
         } else {
             this.sparseFields = Collections.emptyMap();
-            this.predicates = Collections.emptyMap();
             this.sorting = Sorting.getDefaultEmptyInstance();
-            this.pagination = Pagination.getDefaultPagination();
+            this.pagination = Pagination.getDefaultPagination(this.getElideSettings());
         }
-
-        if (transaction instanceof RequestScopedTransaction) {
-            ((RequestScopedTransaction) transaction).setRequestScope(this);
-        }
-    }
-
-    public RequestScope(JsonApiDocument jsonApiDocument,
-                        DataStoreTransaction transaction,
-                        User user,
-                        EntityDictionary dictionary,
-                        JsonApiMapper mapper,
-                        AuditLogger auditLogger,
-                        SecurityMode securityMode,
-                        Function<RequestScope, PermissionExecutor> permissionExecutor) {
-        this(
-                jsonApiDocument,
-                transaction,
-                user,
-                dictionary,
-                mapper,
-                auditLogger,
-                null,
-                securityMode,
-                permissionExecutor
-        );
-    }
-
-    public RequestScope(JsonApiDocument jsonApiDocument,
-                        DataStoreTransaction transaction,
-                        User user,
-                        EntityDictionary dictionary,
-                        JsonApiMapper mapper,
-                        AuditLogger auditLogger,
-                        MultivaluedMap<String, String> queryParams) {
-        this(
-                jsonApiDocument,
-                transaction,
-                user,
-                dictionary,
-                mapper,
-                auditLogger,
-                queryParams,
-                SecurityMode.SECURITY_ACTIVE,
-                null
-        );
-    }
-
-    public RequestScope(JsonApiDocument jsonApiDocument,
-                        DataStoreTransaction transaction,
-                        User user,
-                        EntityDictionary dictionary,
-                        JsonApiMapper mapper,
-                        AuditLogger auditLogger) {
-        this(
-                jsonApiDocument,
-                transaction,
-                user,
-                dictionary,
-                mapper,
-                auditLogger,
-                null,
-                SecurityMode.SECURITY_ACTIVE,
-                null
-        );
-    }
-
-    /**
-     * Outer RequestScope constructor for use by Patch Extension.
-     *
-     * @param transaction the transaction
-     * @param user        the user
-     * @param dictionary  the dictionary
-     * @param mapper      the mapper
-     * @param auditLogger      the logger
-     */
-    protected RequestScope(DataStoreTransaction transaction,
-                           User user,
-                           EntityDictionary dictionary,
-                           JsonApiMapper mapper,
-                           AuditLogger auditLogger) {
-        this(null, transaction, user, dictionary, mapper, auditLogger);
     }
 
     /**
      * Special copy constructor for use by PatchRequestScope.
      *
+     * @param path the URL path
      * @param jsonApiDocument   the json api document
      * @param outerRequestScope the outer request scope
      */
-    protected RequestScope(JsonApiDocument jsonApiDocument, RequestScope outerRequestScope) {
+    protected RequestScope(String path, JsonApiDocument jsonApiDocument, RequestScope outerRequestScope) {
         this.jsonApiDocument = jsonApiDocument;
+        this.path = path;
         this.transaction = outerRequestScope.transaction;
         this.user = outerRequestScope.user;
         this.dictionary = outerRequestScope.dictionary;
@@ -207,20 +207,31 @@ public class RequestScope implements com.yahoo.elide.security.RequestScope {
         this.auditLogger = outerRequestScope.auditLogger;
         this.queryParams = Optional.empty();
         this.sparseFields = Collections.emptyMap();
-        this.predicates = Collections.emptyMap();
         this.sorting = Sorting.getDefaultEmptyInstance();
-        this.pagination = Pagination.getDefaultPagination();
+        this.pagination = Pagination.getDefaultPagination(outerRequestScope.getElideSettings());
         this.objectEntityCache = outerRequestScope.objectEntityCache;
-        this.securityMode = outerRequestScope.securityMode;
         this.newPersistentResources = outerRequestScope.newPersistentResources;
-        this.commitTriggers = outerRequestScope.commitTriggers;
         this.permissionExecutor = outerRequestScope.getPermissionExecutor();
-        this.failedAuthorizations = outerRequestScope.failedAuthorizations;
         this.dirtyResources = outerRequestScope.dirtyResources;
+        this.deletedResources = outerRequestScope.deletedResources;
+        this.filterDialect = outerRequestScope.filterDialect;
+        this.expressionsByType = outerRequestScope.expressionsByType;
+        this.elideSettings = outerRequestScope.elideSettings;
+        this.useFilterExpressions = outerRequestScope.useFilterExpressions;
+        this.updateStatusCode = outerRequestScope.updateStatusCode;
+        this.mutatingMultipleEntities = outerRequestScope.mutatingMultipleEntities;
+        this.lifecycleEvents = outerRequestScope.lifecycleEvents;
+        this.distinctLifecycleEvents = outerRequestScope.distinctLifecycleEvents;
+        this.queuedLifecycleEvents = outerRequestScope.queuedLifecycleEvents;
     }
 
+    @Override
     public Set<com.yahoo.elide.security.PersistentResource> getNewResources() {
-        return (Set<com.yahoo.elide.security.PersistentResource>) (Set) newPersistentResources;
+        return (Set<com.yahoo.elide.security.PersistentResource>) (Set<?>) newPersistentResources;
+    }
+
+    public boolean isNewResource(Object entity) {
+        return newPersistentResources.stream().filter(r -> r.getObject() == entity).findAny().isPresent();
     }
 
     /**
@@ -251,58 +262,237 @@ public class RequestScope implements com.yahoo.elide.security.RequestScope {
     }
 
     /**
-     * Get predicates for a specific collection type.
+     * Get filter expression for a specific collection type.
      * @param type The name of the type
-     * @return The set of predicates for the given type
+     * @return The filter expression for the given type
      */
-    public Set<Predicate> getPredicatesOfType(String type) {
-        return predicates.getOrDefault(type, Collections.emptySet());
+    public Optional<FilterExpression> getFilterExpressionByType(String type) {
+        return Optional.ofNullable(expressionsByType.get(type));
     }
 
     /**
-     * run any deferred post-commit triggers.
-     *
-     * @see com.yahoo.elide.annotation.CreatePermission
+     * Get the global/cross-type filter expression.
+     * @param loadClass Entity class
+     * @return The global filter expression evaluated at the first load
      */
-    public void runCommitTriggers() {
-        new ArrayList<>(commitTriggers).forEach(Runnable::run);
-        commitTriggers.clear();
+    public Optional<FilterExpression> getLoadFilterExpression(Class<?> loadClass) {
+        Optional<FilterExpression> permissionFilter;
+        permissionFilter = getPermissionExecutor().getReadPermissionFilter(loadClass);
+        Optional<FilterExpression> globalFilterExpressionOptional = null;
+        if (globalFilterExpression == null) {
+            String typeName = dictionary.getJsonAliasFor(loadClass);
+            globalFilterExpressionOptional =  getFilterExpressionByType(typeName);
+        } else {
+            globalFilterExpressionOptional = Optional.of(globalFilterExpression);
+        }
+
+        if (globalFilterExpressionOptional.isPresent() && permissionFilter.isPresent()) {
+            return Optional.of(new AndFilterExpression(globalFilterExpressionOptional.get(),
+                    permissionFilter.get()));
+        }
+        if (globalFilterExpressionOptional.isPresent()) {
+            return globalFilterExpressionOptional;
+        }
+        if (permissionFilter.isPresent()) {
+            return permissionFilter;
+        }
+        return Optional.empty();
     }
 
-    public void queueCommitTrigger(PersistentResource resource) {
-        queueCommitTrigger(resource, "");
+    /**
+     * Get the filter expression for a particular relationship
+     * @param parent The object which has the relationship
+     * @param relationName The relationship name
+     * @return A type specific filter expression for the given relationship
+     */
+    public Optional<FilterExpression> getExpressionForRelation(PersistentResource parent, String relationName) {
+        final Class<?> entityClass = dictionary.getParameterizedType(parent.getObject(), relationName);
+        if (entityClass == null) {
+            throw new InvalidAttributeException(relationName, parent.getType());
+        }
+        if (dictionary.isMappedInterface(entityClass) && interfaceHasFilterExpression(entityClass)) {
+            throw new InvalidOperationException(
+                    "Cannot apply filters to polymorphic relations mapped with MappedInterface");
+        }
+        final String valType = dictionary.getJsonAliasFor(entityClass);
+        return getFilterExpressionByType(valType);
     }
 
-    public void queueCommitTrigger(PersistentResource resource, String fieldName) {
-        commitTriggers.add(() -> resource.runTriggers(OnCommit.class, fieldName));
-    }
-
-    public void logAuthFailure(Class<? extends Check> check, String type, String id) {
-        failedAuthorizations.add(() -> String.format("ForbiddenAccess %s %s#%s",
-                check == null ? "" : check.getName(), type, id));
-    }
-
-    public void logAuthFailure(Class<? extends Check> check) {
-        failedAuthorizations.add(() -> String.format("ForbiddenAccess %s",
-                check == null ? "" : check.getName()));
-    }
-
-    public String getAuthFailureReason() {
-        Set<String> uniqueReasons = new HashSet<>();
-        StringBuffer buf = new StringBuffer();
-        buf.append("Failed authorization checks:\n");
-        for (Supplier<String> authorizationFailure : failedAuthorizations) {
-            String reason = authorizationFailure.get();
-            if (!uniqueReasons.contains(reason)) {
-                buf.append(authorizationFailure.get());
-                buf.append("\n");
-                uniqueReasons.add(reason);
+    /**
+     * Checks to see if any filters are meant to to applied to a polymorphic Any/ManyToAny relationship.
+     * @param entityInterface a @MappedInterface
+     * @return whether or not there are any typed filter expressions meant for this polymorphic interface
+     */
+    private boolean interfaceHasFilterExpression(Class<?> entityInterface) {
+        for (String filterType : expressionsByType.keySet()) {
+            Class<?> polyMorphicClass = dictionary.getEntityClass(filterType);
+            if (entityInterface.isAssignableFrom(polyMorphicClass)) {
+                return true;
             }
         }
-        return buf.toString();
+        return false;
     }
 
-    public void saveObjects() {
-        dirtyResources.stream().map(PersistentResource::getObject).forEach(transaction::save);
+
+    /**
+     * Extracts any query params that start with 'filter'.
+     * @param queryParams request query params
+     * @return extracted filter params
+     */
+    private static MultivaluedMap<String, String> getFilterParams(MultivaluedMap<String, String> queryParams) {
+        MultivaluedMap<String, String> returnMap = new MultivaluedHashMap<>();
+
+        queryParams.entrySet()
+                .stream()
+                .filter((entry) -> entry.getKey().startsWith("filter"))
+                .forEach((entry) -> {
+                    returnMap.put(entry.getKey(), entry.getValue());
+                });
+        return returnMap;
+    }
+
+    /**
+     * Run queued on triggers (i.e. @OnCreatePreSecurity, @OnUpdatePreSecurity, etc.).
+     */
+    public void runQueuedPreSecurityTriggers() {
+        this.queuedLifecycleEvents
+                .filter(CRUDEvent::isCreateEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnCreatePreSecurity.class, false))
+                .throwOnError();
+    }
+
+    /**
+     * Run queued pre triggers (i.e. @OnCreatePreCommit, @OnUpdatePreCommit, etc.).
+     */
+    public void runQueuedPreCommitTriggers() {
+        this.queuedLifecycleEvents
+                .filter(CRUDEvent::isCreateEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnCreatePreCommit.class, false))
+                .throwOnError();
+
+        this.queuedLifecycleEvents
+                .filter(CRUDEvent::isUpdateEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnUpdatePreCommit.class, false))
+                .throwOnError();
+
+        this.queuedLifecycleEvents
+                .filter(CRUDEvent::isDeleteEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnDeletePreCommit.class, false))
+                .throwOnError();
+
+        this.queuedLifecycleEvents
+                .filter(CRUDEvent::isReadEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnReadPreCommit.class, false))
+                .throwOnError();
+    }
+
+    /**
+     * Run queued post triggers (i.e. @OnCreatePostCommit, @OnUpdatePostCommit, etc.).
+     */
+    public void runQueuedPostCommitTriggers() {
+        this.queuedLifecycleEvents
+                .filter(CRUDEvent::isCreateEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnCreatePostCommit.class, false))
+                .throwOnError();
+
+        this.queuedLifecycleEvents
+                .filter(CRUDEvent::isUpdateEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnUpdatePostCommit.class, false))
+                .throwOnError();
+
+        this.queuedLifecycleEvents
+                .filter(CRUDEvent::isDeleteEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnDeletePostCommit.class, false))
+                .throwOnError();
+
+        this.queuedLifecycleEvents
+                .filter(CRUDEvent::isReadEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnReadPostCommit.class, false))
+                .throwOnError();
+    }
+
+    /**
+     * Publishes a lifecycle event to all listeners.
+     *
+     * @param resource Resource on which to execute trigger
+     * @param crudAction CRUD action
+     */
+    protected void publishLifecycleEvent(PersistentResource<?> resource, CRUDEvent.CRUDAction crudAction) {
+        lifecycleEvents.onNext(
+                    new CRUDEvent(crudAction, resource, PersistentResource.CLASS_NO_FIELD, Optional.empty())
+        );
+    }
+
+    /**
+     * Publishes a lifecycle event to all listeners.
+     *
+     * @param resource Resource on which to execute trigger
+     * @param fieldName Field name for which to specify trigger
+     * @param crudAction CRUD Action
+     * @param changeSpec Optional ChangeSpec to pass to the lifecycle hook
+     */
+    protected void publishLifecycleEvent(PersistentResource<?> resource,
+                                         String fieldName,
+                                         CRUDEvent.CRUDAction crudAction,
+                                         Optional<ChangeSpec> changeSpec) {
+        lifecycleEvents.onNext(
+                    new CRUDEvent(crudAction, resource, fieldName, changeSpec)
+        );
+    }
+
+    public void saveOrCreateObjects() {
+        dirtyResources.removeAll(newPersistentResources);
+        // Delete has already been called on these objects
+        dirtyResources.removeAll(deletedResources);
+        newPersistentResources
+                .stream()
+                .map(PersistentResource::getObject)
+                .forEach(s -> transaction.createObject(s, this));
+        dirtyResources.stream().map(PersistentResource::getObject).forEach(obj -> transaction.save(obj, this));
+    }
+
+    public String getUUIDFor(Object o) {
+        return objectEntityCache.getUUID(o);
+    }
+
+    public Object getObjectById(String type, String id) {
+        Object result = objectEntityCache.get(type, id);
+
+        // Check inheritance too
+        Iterator<String> it = dictionary.getSubclassingEntityNames(type).iterator();
+        while (result == null && it.hasNext()) {
+            String newType = getInheritanceKey(it.next(), type);
+            result = objectEntityCache.get(newType, id);
+        }
+
+        return result;
+    }
+
+    public void setUUIDForObject(String type, String id, Object object) {
+        objectEntityCache.put(type, id, object);
+
+        // Insert for all inherited entities as well
+        dictionary.getSuperClassEntityNames(type).stream()
+                .map(i -> getInheritanceKey(type, i))
+                .forEach((newType) -> objectEntityCache.put(newType, id, object));
+    }
+
+    private String getInheritanceKey(String subClass, String superClass) {
+        return subClass + "!" + superClass;
+    }
+
+    private void registerPreSecurityObservers() {
+
+        this.distinctLifecycleEvents
+                .filter(CRUDEvent::isReadEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnReadPreSecurity.class, true));
+
+        this.distinctLifecycleEvents
+                .filter(CRUDEvent::isUpdateEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnUpdatePreSecurity.class, true));
+
+        this.distinctLifecycleEvents
+                .filter(CRUDEvent::isDeleteEvent)
+                .subscribeWith(new LifecycleHookInvoker(dictionary, OnDeletePreSecurity.class, true));
     }
 }
